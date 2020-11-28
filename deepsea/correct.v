@@ -59,20 +59,26 @@ Section UNCHANGED_MEM.
       unchanged_on m1 m2.                  
 End UNCHANGED_MEM.
 
+
+(* The general case for a clight program to be correct w.r.t its specification *)
 Section CORRECTNESS.
   Variable p : Clight.program.
   Variable se : Genv.symtbl.
-  Let clight_p : !li_c --o li_c := clight_bigstep p se.
+  Let clight_p : !li_c --o li_c := clight_bigstep p se. (* the semantics of the clight program *)
   Variable underlay_obj: ObjSig.
-  Variable overlay_obj: ObjSig. 
+  Variable overlay_obj: ObjSig.
+  (* the semantics of the clight program on top of a deepsea underlay *)
   Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
-
+  (* the coherent space where specification lives in *)
   Let spec_space : space := !underlay_obj --o !overlay_obj.
+  (* the specification *)
   Variable spec : !underlay_obj --o !overlay_obj.
 
   Record correctness :=
     {
+      (* rel : the relation that relates specifications and the memory *)
       rel : token spec_space -> mem -> Prop;
+      (* the condition that the memory has to satisfy *)
       init_mem : mem -> Prop;
       module_var : forall m m' t, unchanged_on se p m m' -> rel t m -> rel t m';
       simulation:
@@ -87,7 +93,8 @@ Section CORRECTNESS.
             (* behavior of the remaning trace *)
             rel (v, t) (cr_mem cr);
             (* TODO: mem change only happened to module variables *)
-      init_rel: forall m t, has spec t -> init_mem m -> rel t m;
+      (* the codition that p faithfully implements the spec *)
+      correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
     }.
 End CORRECTNESS.
 
@@ -130,6 +137,7 @@ Section GS_CORRECT.
   Variable se : Genv.symtbl.
   Let clight_p : !li_c --o li_c := clight_bigstep p se.
   Variable gs_obj: ObjSig.
+  (* the getter/setter program represented as 1 --o li_c *)
   Program Definition deepsea_p : !empty_obj --o li_c :=
     {|
       has '(s, c) := s = nil /\ has clight_p (nil, c)
@@ -142,11 +150,17 @@ Section GS_CORRECT.
     apply lmaps1. apply lmaps2. constructor.
     intuition.
   Defined.
+  (* Since the getter/setter objects do not interact with the environment,
+     their specifications are just a clique within the space of !obj *)
   Variable spec : clique (!gs_obj).
 
+  (* The witness relation *)
   Variable gs_rel : token (!gs_obj) -> mem -> Prop.
+  (* The condition on the initial memory *)
   Variable gs_init_mem : mem -> Prop.
+  (* Proof obligation 1 *)
   Hypothesis gs_module_var : forall m m' t, unchanged_on se p m m' -> gs_rel t m -> gs_rel t m'.
+  (* Proof obligation 2 *)
   Hypothesis gs_simulation :
     forall e t m,
       gs_rel (e :: t) m ->
@@ -154,8 +168,10 @@ Section GS_CORRECT.
         has (objsig2lic gs_obj) (e, (cq, cr)) /\
         has clight_p (nil, (cq, cr)) /\
         gs_rel t (cr_mem cr).
+  (* Proof obligation 3 *)
   Hypothesis gs_init_rel : forall m t, has spec t -> gs_init_mem m -> gs_rel t m.
-                  
+
+  (* Adapt the correctness of a getter/setter object into the general form *)
   Program Definition gs_correct : correctness p se empty_obj gs_obj (unit_trace_extend spec) :=
     {|
       rel '(u, o) m := gs_rel o m /\ u = nil;
@@ -189,17 +205,19 @@ Section ABSFUN_CORRECT.
   Let clight_p : !li_c --o li_c := clight_bigstep p se.
   Variable underlay_obj : ObjSig.
   Variable overlay_obj : ObjSig.
-
+  (* the clight program on top of a deepsea underlay *)
   Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
+  (* Since the absfun objects are linear, we can use their linear pattern as spec
+     Regular externsion extends the linear paatern to the general form *)
   Variable spec : !underlay_obj --o overlay_obj.
-
+  (* The proof obligation for absfun objects *)
   Hypothesis absfun_sim:
     forall s e,
       has spec (s, e) ->
       exists cq cr,
         has (objsig2lic overlay_obj) (e, (cq, cr)) /\
         has deepsea_p (s, (cq, cr)).
-
+  (* Adapt the correctness of the absfun objects into the genral form *)
   Program Definition absfun_correct : correctness p se underlay_obj overlay_obj (dag_ext spec) :=
     {|
       rel '(s, t) _ := has (dag_ext spec) (s, t);
