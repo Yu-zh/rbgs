@@ -42,7 +42,11 @@ Section UNCHANGED_MEM.
           field_offset ge id (co_members co) = OK delta ->
           deref_same ty_fld b (Ptrofs.add ofs (Ptrofs.repr delta)) m1 m2) ->
       deref_same ty b ofs m1 m2
-  | deref_same_union:
+  | deref_same_union id a co ty_fld:
+      ty = Tunion id a ->
+      (genv_cenv ge) ! id = Some co ->
+      In (id, ty_fld) (co_members co) ->
+      deref_same ty_fld b ofs m1 m2 ->
       deref_same ty b ofs m1 m2.
       
   Inductive unchanged_on (m1: mem)(m2: mem) : Prop :=
