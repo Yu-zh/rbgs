@@ -191,63 +191,41 @@ Section ABSFUN_CORRECT.
   Variable overlay_obj : ObjSig.
 
   Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
-  Variable spec : !underlay_obj --o !overlay_obj.
+  Variable spec : !underlay_obj --o overlay_obj.
 
-  (* Hypothesis absfun_sim: *)
-  (*   forall s e t, *)
-  (*     has spec (s, e :: t) -> *)
-  (*     exists u v cq cr, *)
-  (*       s = u ++ v /\ *)
-  (*       has (objsig2lic overlay_obj) (e, (cq, cr)) /\ *)
-  (*       has deepsea_p (u, (cq, cr)) /\ *)
-  (*       has spec *)
-      
+  Hypothesis absfun_sim:
+    forall s e,
+      has spec (s, e) ->
+      exists cq cr,
+        has (objsig2lic overlay_obj) (e, (cq, cr)) /\
+        has deepsea_p (s, (cq, cr)).
+
+  Program Definition absfun_correct : correctness p se underlay_obj overlay_obj (dag_ext spec) :=
+    {|
+      rel '(s, t) _ := has (dag_ext spec) (s, t);
+      init_mem _ := True;
+    |}.
+  Next Obligation.
+    intros m m' [s t] unchanged. simpl.
+    auto.
+  Defined.
+  Next Obligation.
+    intros s e t m. simpl.
+    intros [ss [comul lmap]].
+    inversion comul.
+    - inversion lmap. subst. inversion H3.
+    - exists s0, a.
+      specialize (absfun_sim s0 e).
+      subst ss. subst s.
+      inversion lmap. subst.
+      specialize (absfun_sim H3) as [cq [cr [e_match e_impl]]].
+      exists cq, cr. split. auto.
+      split. apply e_match. split.
+      apply e_impl.
+      exists aa. split. auto. auto.
+  Defined.
+  Next Obligation.
+    intros m [s t]. auto.
+  Defined.
   
 End ABSFUN_CORRECT.
-(* Program Definition unit_exp (s : space) (c : clique (dag s)): !unit_obj --o !s := *)
-(*   {| *)
-(*     has '(u, s) := has c s *)
-(*   |}. *)
-(* Next Obligation. *)
-(*   intros s c [u1 o1] [u2 o2]. simpl. *)
-(*   intros. split. *)
-(*   - exploit (has_coh _ c). *)
-(*     apply H. apply H0. auto. *)
-(*   - intros oeq. destruct u1. destruct u2. auto. *)
-(* Defined. *)
-(* Require Import deepsea.HyperType. *)
-(* Require Import deepsea.HyperTypeInst. *)
-
-(* Definition unit_ident : positive := 1%positive. *)
-(* Instance unit_impl : ObjSigImpl unit := *)
-(*   {| *)
-(*     event_id _ := unit_ident; *)
-(*     event_is_return _ := true; *)
-(*     event_htp_res _ := void_unit_pair; *)
-(*     event_htp_args _ := nil; *)
-(*     event_res _ := tt; *)
-(*     event_args _ := HNil; *)
-(*     build_event _ _ _ _ _ := Some tt *)
-(*   |}. *)
-(* Instance unit_prop : ObjSigProp unit. *)
-(* split. *)
-(* - intros. auto. *)
-(* - intros. auto. *)
-(* - intros. simpl. *)
-(*   Admitted. *)
-(* Program Definition unit_obj : ObjSig := *)
-(*   {| *)
-(*     event := unit *)
-(*   |}. *)
-(* Local Obligation Tactic := idtac. *)
-(* Program Definition unit_exp (s : space) (c : clique (dag s)): unit_obj --o !s := *)
-(*   {| *)
-(*     has '(u, s) := has c s *)
-(*   |}. *)
-(* Next Obligation. *)
-(*   intros s c [u1 o1] [u2 o2]. simpl. *)
-(*   intros. split. *)
-(*   - exploit (has_coh _ c). *)
-(*     apply H. apply H0. auto. *)
-(*   - intros oeq. destruct u1. destruct u2. auto. *)
-(* Defined. *)
