@@ -16,6 +16,7 @@ Require Import compcert.lib.Integers.     (* ptrofs *)
 Require Import compcert.lib.Coqlib.       (* Z *)
 Require Import compcert.lib.Maps.         (* PTree.get *)
 Require Import compcert.common.Errors.    (* res *)
+Require Import DSCC.                      (* objsig2lic *)
 
 Section UNCHANGED_MEM.
   Variable se : Genv.symtbl.
@@ -57,3 +58,196 @@ Section UNCHANGED_MEM.
       deref_same ty l Ptrofs.zero m1 m2 ->
       unchanged_on m1 m2.                  
 End UNCHANGED_MEM.
+
+Section CORRECTNESS.
+  Variable p : Clight.program.
+  Variable se : Genv.symtbl.
+  Let clight_p : !li_c --o li_c := clight_bigstep p se.
+  Variable underlay_obj: ObjSig.
+  Variable overlay_obj: ObjSig. 
+  Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
+
+  Let spec_space : space := !underlay_obj --o !overlay_obj.
+  Variable spec : !underlay_obj --o !overlay_obj.
+
+  Record correctness :=
+    {
+      rel : token spec_space -> mem -> Prop;
+      init_mem : mem -> Prop;
+      module_var : forall m m' t, unchanged_on se p m m' -> rel t m -> rel t m';
+      simulation:
+        forall s e t m,
+          rel (s, e::t) m ->
+          exists u v cq cr,
+            s = u ++ v /\
+            (* Clight query/reply matches the deepsea event e *)
+            has (objsig2lic overlay_obj) (e, (cq, cr)) /\
+            (* Clight implementation simulates deepsea event e *)
+            has deepsea_p (u, (cq, cr)) /\ 
+            (* behavior of the remaning trace *)
+            rel (v, t) (cr_mem cr);
+            (* TODO: mem change only happened to module variables *)
+      init_rel: forall m t, has spec t -> init_mem m -> rel t m;
+    }.
+End CORRECTNESS.
+
+Local Obligation Tactic := idtac.
+Program Definition empty_obj : ObjSig :=
+  {|
+    event := Empty_set
+  |}.
+Next Obligation.
+  esplit; intros; try contradiction.
+  refine None.
+  Unshelve.
+  intros; try contradiction.
+  intros; try contradiction.
+Defined.
+Next Obligation.
+  esplit; intros; try contradiction.
+Defined.
+Program Definition unit_trace : clique (!empty_obj) :=
+  {|
+    has s := s = nil
+  |}.
+Next Obligation.
+  simpl. intros. subst. constructor.
+Defined.
+Program Definition unit_trace_extend {s : space} (c : clique s) : !empty_obj --o s :=
+  {|
+    has '(u, t) := u = nil /\ has c t
+  |}.
+Next Obligation.
+  intros s c [u1 s1] [u2 s2]. simpl.
+  intros [-> has1] [-> has2] coh.
+  split.
+  - exploit (has_coh _ c s1 s2); auto.
+  - auto.
+Defined.
+
+Section GS_CORRECT.
+  Variable p : Clight.program.  (* a getter/setter program *)
+  Variable se : Genv.symtbl.
+  Let clight_p : !li_c --o li_c := clight_bigstep p se.
+  Variable gs_obj: ObjSig.
+  Program Definition deepsea_p : !empty_obj --o li_c :=
+    {|
+      has '(s, c) := s = nil /\ has clight_p (nil, c)
+    |}.
+  Next Obligation.
+    intros [s1 qr1] [s2 qr2]. simpl.
+    intros [-> lmaps1] [-> lmaps2] H.
+    split; intuition.
+    exploit (has_coh _ (c_bigstep_lmaps se p) (nil, qr1) (nil, qr2)).
+    apply lmaps1. apply lmaps2. constructor.
+    intuition.
+  Defined.
+  Variable spec : clique (!gs_obj).
+
+  Variable gs_rel : token (!gs_obj) -> mem -> Prop.
+  Variable gs_init_mem : mem -> Prop.
+  Hypothesis gs_module_var : forall m m' t, unchanged_on se p m m' -> gs_rel t m -> gs_rel t m'.
+  Hypothesis gs_simulation :
+    forall e t m,
+      gs_rel (e :: t) m ->
+      exists cq cr,
+        has (objsig2lic gs_obj) (e, (cq, cr)) /\
+        has clight_p (nil, (cq, cr)) /\
+        gs_rel t (cr_mem cr).
+  Hypothesis gs_init_rel : forall m t, has spec t -> gs_init_mem m -> gs_rel t m.
+                  
+  Program Definition gs_correct : correctness p se empty_obj gs_obj (unit_trace_extend spec) :=
+    {|
+      rel '(u, o) m := gs_rel o m /\ u = nil;
+      init_mem := gs_init_mem
+    |}.
+  Next Obligation.
+    intros m m' [s t] unchanged. simpl.
+    intros [rel <-]. intuition.
+    eapply gs_module_var. apply unchanged. auto.
+  Defined.
+  Next Obligation.
+    intros s e t m. simpl.
+    intros [rel ->]. exists nil, nil.
+    specialize (gs_simulation e t m rel) as [cq [cr [ev_match [ev_impl rest]]]].
+    exists cq, cr. split. auto.
+    split. apply ev_match.
+    split. exists nil.
+    split. constructor. apply ev_impl.
+    split. apply rest. auto.
+  Defined.
+  Next Obligation.
+    intros m [s t]. simpl.
+    intros [-> H] H1. split; auto.
+  Defined.
+End GS_CORRECT.
+
+Section ABSFUN_CORRECT.
+
+  Variable p : Clight.program.  (* an absfun program *)
+  Variable se : Genv.symtbl.
+  Let clight_p : !li_c --o li_c := clight_bigstep p se.
+  Variable underlay_obj : ObjSig.
+  Variable overlay_obj : ObjSig.
+
+  Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
+  Variable spec : !underlay_obj --o !overlay_obj.
+
+  (* Hypothesis absfun_sim: *)
+  (*   forall s e t, *)
+  (*     has spec (s, e :: t) -> *)
+  (*     exists u v cq cr, *)
+  (*       s = u ++ v /\ *)
+  (*       has (objsig2lic overlay_obj) (e, (cq, cr)) /\ *)
+  (*       has deepsea_p (u, (cq, cr)) /\ *)
+  (*       has spec *)
+      
+  
+End ABSFUN_CORRECT.
+(* Program Definition unit_exp (s : space) (c : clique (dag s)): !unit_obj --o !s := *)
+(*   {| *)
+(*     has '(u, s) := has c s *)
+(*   |}. *)
+(* Next Obligation. *)
+(*   intros s c [u1 o1] [u2 o2]. simpl. *)
+(*   intros. split. *)
+(*   - exploit (has_coh _ c). *)
+(*     apply H. apply H0. auto. *)
+(*   - intros oeq. destruct u1. destruct u2. auto. *)
+(* Defined. *)
+(* Require Import deepsea.HyperType. *)
+(* Require Import deepsea.HyperTypeInst. *)
+
+(* Definition unit_ident : positive := 1%positive. *)
+(* Instance unit_impl : ObjSigImpl unit := *)
+(*   {| *)
+(*     event_id _ := unit_ident; *)
+(*     event_is_return _ := true; *)
+(*     event_htp_res _ := void_unit_pair; *)
+(*     event_htp_args _ := nil; *)
+(*     event_res _ := tt; *)
+(*     event_args _ := HNil; *)
+(*     build_event _ _ _ _ _ := Some tt *)
+(*   |}. *)
+(* Instance unit_prop : ObjSigProp unit. *)
+(* split. *)
+(* - intros. auto. *)
+(* - intros. auto. *)
+(* - intros. simpl. *)
+(*   Admitted. *)
+(* Program Definition unit_obj : ObjSig := *)
+(*   {| *)
+(*     event := unit *)
+(*   |}. *)
+(* Local Obligation Tactic := idtac. *)
+(* Program Definition unit_exp (s : space) (c : clique (dag s)): unit_obj --o !s := *)
+(*   {| *)
+(*     has '(u, s) := has c s *)
+(*   |}. *)
+(* Next Obligation. *)
+(*   intros s c [u1 o1] [u2 o2]. simpl. *)
+(*   intros. split. *)
+(*   - exploit (has_coh _ c). *)
+(*     apply H. apply H0. auto. *)
+(*   - intros oeq. destruct u1. destruct u2. auto. *)
+(* Defined. *)
