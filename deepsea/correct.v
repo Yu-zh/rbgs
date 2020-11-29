@@ -17,48 +17,25 @@ Require Import compcert.lib.Coqlib.       (* Z *)
 Require Import compcert.lib.Maps.         (* PTree.get *)
 Require Import compcert.common.Errors.    (* res *)
 Require Import DSCC.                      (* objsig2lic *)
+Require Import compcert.common.Memory.    (* unchanged_on *)
 
-Section UNCHANGED_MEM.
+Section MODULE_VAR.
   Variable se : Genv.symtbl.
   Variable p : Clight.program.
   Let ge : genv := globalenv se p.
 
-  Inductive deref_same (ty: type) (b: block) (ofs: ptrofs) (m1: mem) (m2: mem) : Prop :=
-  | deref_same_value chunk v:
-      access_mode ty = By_value chunk ->
-      Mem.loadv chunk m1 (Vptr b ofs) = Some v ->
-      Mem.loadv chunk m2 (Vptr b ofs) = Some v ->
-      deref_same ty b ofs m1 m2
-  | deref_same_array elem_ty sz a:
-      ty = Tarray elem_ty sz a ->
-      (forall (i : Z), 
-          0 <= i < sz ->
-          deref_same elem_ty b (Ptrofs.add ofs (Ptrofs.repr (i * sizeof ge elem_ty))) m1 m2) ->
-      deref_same ty b ofs m1 m2
-  | deref_same_struct id a co:
-      ty = Tstruct id a ->
-      (genv_cenv ge) ! id = Some co ->
-      (forall id ty_fld delta,
-          In (id, ty_fld) (co_members co) ->
-          field_offset ge id (co_members co) = OK delta ->
-          deref_same ty_fld b (Ptrofs.add ofs (Ptrofs.repr delta)) m1 m2) ->
-      deref_same ty b ofs m1 m2
-  | deref_same_union id a co ty_fld:
-      ty = Tunion id a ->
-      (genv_cenv ge) ! id = Some co ->
-      In (id, ty_fld) (co_members co) ->
-      deref_same ty_fld b ofs m1 m2 ->
-      deref_same ty b ofs m1 m2.
-      
-  Inductive unchanged_on (m1: mem)(m2: mem) : Prop :=
-  | unchanged_on_cond id l (v : globvar type) (ty : type):
-      Genv.find_symbol ge id = Some l ->
-      Genv.find_def ge l = Some (Gvar v) ->
+  Inductive module_var : block -> Z -> Prop :=
+  | module_var_intro id b (v : globvar type) (ty : type):
+      Genv.find_symbol ge id = Some b ->
+      Genv.find_def ge b = Some (Gvar v) ->
       ty = gvar_info v ->
-      deref_same ty l Ptrofs.zero m1 m2 ->
-      unchanged_on m1 m2.                  
-End UNCHANGED_MEM.
-
+      module_var b (sizeof ge ty).
+  Inductive non_module_var : block -> Z -> Prop :=
+  | non_module_var_intro b ofs b' ofs':
+      module_var b ofs ->
+      b' <> b \/ ofs <> ofs' ->
+      non_module_var b' ofs'.
+End MODULE_VAR.
 
 (* The general case for a clight program to be correct w.r.t its specification *)
 Section CORRECTNESS.
@@ -80,7 +57,7 @@ Section CORRECTNESS.
       rel : token spec_space -> mem -> Prop;
       (* the condition that the memory has to satisfy *)
       init_mem : mem -> Prop;
-      module_var : forall m m' t, unchanged_on se p m m' -> rel t m -> rel t m';
+      mem_scope : forall m m' t, Mem.unchanged_on (module_var se p) m m' -> rel t m -> rel t m';
       simulation:
         forall s e t m,
           rel (s, e::t) m ->
@@ -91,8 +68,9 @@ Section CORRECTNESS.
             (* Clight implementation simulates deepsea event e *)
             has deepsea_p (u, (cq, cr)) /\ 
             (* behavior of the remaning trace *)
-            rel (v, t) (cr_mem cr);
-            (* TODO: mem change only happened to module variables *)
+            rel (v, t) (cr_mem cr) /\
+            (* mem change only happened to module variables *)
+            Mem.unchanged_on (non_module_var se p) (cq_mem cq) (cr_mem cr);
       (* the codition that p faithfully implements the spec *)
       correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
     }.
@@ -159,7 +137,8 @@ Section GS_CORRECT.
   (* The condition on the initial memory *)
   Variable gs_init_mem : mem -> Prop.
   (* Proof obligation 1 *)
-  Hypothesis gs_module_var : forall m m' t, unchanged_on se p m m' -> gs_rel t m -> gs_rel t m'.
+  Hypothesis gs_mem_scope :
+    forall m m' t, Mem.unchanged_on (module_var se p) m m' -> gs_rel t m -> gs_rel t m'.
   (* Proof obligation 2 *)
   Hypothesis gs_simulation :
     forall e t m,
@@ -167,7 +146,8 @@ Section GS_CORRECT.
       exists cq cr,
         has (objsig2lic gs_obj) (e, (cq, cr)) /\
         has clight_p (nil, (cq, cr)) /\
-        gs_rel t (cr_mem cr).
+        gs_rel t (cr_mem cr) /\
+        Mem.unchanged_on (non_module_var se p) (cq_mem cq) (cr_mem cr).
   (* Proof obligation 3 *)
   Hypothesis gs_init_rel : forall m t, has spec t -> gs_init_mem m -> gs_rel t m.
 
@@ -180,17 +160,17 @@ Section GS_CORRECT.
   Next Obligation.
     intros m m' [s t] unchanged. simpl.
     intros [rel <-]. intuition.
-    eapply gs_module_var. apply unchanged. auto.
+    eapply gs_mem_scope. apply unchanged. auto.
   Defined.
   Next Obligation.
     intros s e t m. simpl.
     intros [rel ->]. exists nil, nil.
-    specialize (gs_simulation e t m rel) as [cq [cr [ev_match [ev_impl rest]]]].
+    specialize (gs_simulation e t m rel) as [cq [cr [ev_match [ev_impl [rest unchanged]]]]].
     exists cq, cr. split. auto.
     split. apply ev_match.
     split. exists nil.
     split. constructor. apply ev_impl.
-    split. apply rest. auto.
+    split; intuition.
   Defined.
   Next Obligation.
     intros m [s t]. simpl.
@@ -199,7 +179,6 @@ Section GS_CORRECT.
 End GS_CORRECT.
 
 Section ABSFUN_CORRECT.
-
   Variable p : Clight.program.  (* an absfun program *)
   Variable se : Genv.symtbl.
   Let clight_p : !li_c --o li_c := clight_bigstep p se.
@@ -216,7 +195,8 @@ Section ABSFUN_CORRECT.
       has spec (s, e) ->
       exists cq cr,
         has (objsig2lic overlay_obj) (e, (cq, cr)) /\
-        has deepsea_p (s, (cq, cr)).
+        has deepsea_p (s, (cq, cr)) /\
+        (cq_mem cq) = (cr_mem cr).
   (* Adapt the correctness of the absfun objects into the genral form *)
   Program Definition absfun_correct : correctness p se underlay_obj overlay_obj (dag_ext spec) :=
     {|
@@ -236,14 +216,14 @@ Section ABSFUN_CORRECT.
       specialize (absfun_sim s0 e).
       subst ss. subst s.
       inversion lmap. subst.
-      specialize (absfun_sim H3) as [cq [cr [e_match e_impl]]].
+      specialize (absfun_sim H3) as [cq [cr [e_match [e_impl unchanged]]]].
       exists cq, cr. split. auto.
       split. apply e_match. split.
       apply e_impl.
-      exists aa. split. auto. auto.
+      split. exists aa. split. auto. auto.
+      rewrite unchanged. apply Mem.unchanged_on_refl.
   Defined.
   Next Obligation.
     intros m [s t]. auto.
   Defined.
-  
 End ABSFUN_CORRECT.
