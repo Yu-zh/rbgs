@@ -30,11 +30,8 @@ Section MODULE_VAR.
       Genv.find_def ge b = Some (Gvar v) ->
       ty = gvar_info v ->
       module_var b (sizeof ge ty).
-  Inductive non_module_var : block -> Z -> Prop :=
-  | non_module_var_intro b ofs b' ofs':
-      module_var b ofs ->
-      b' <> b \/ ofs <> ofs' ->
-      non_module_var b' ofs'.
+  Definition non_module_var (b : block) (ofs : Z) : Prop :=
+    ~ module_var b ofs.
 End MODULE_VAR.
 
 (* The general case for a clight program to be correct w.r.t its specification *)
@@ -50,7 +47,7 @@ Section CORRECTNESS.
   Let spec_space : space := !underlay_obj --o !overlay_obj.
   (* the specification *)
   Variable spec : !underlay_obj --o !overlay_obj.
-
+  Variable inj : meminj.
   Record correctness :=
     {
       (* rel : the relation that relates specifications and the memory *)
@@ -61,17 +58,16 @@ Section CORRECTNESS.
       simulation:
         forall s e t m,
           rel (s, e::t) m ->
-          exists u v cq cr,
+          exists u v cq cr m',
             s = u ++ v /\
-            (* Clight query/reply matches the deepsea event e *)
-            has (objsig2lic overlay_obj) (e, (cq, cr)) /\
+            Mem.inject inj (cq_mem cq) m /\
+            event_C_args overlay_obj e = cq_args cq /\
             (* Clight implementation simulates deepsea event e *)
-            has deepsea_p (u, (cq, cr)) /\ 
+            has deepsea_p (u, (cq, cr)) /\
+            event_C_res overlay_obj e = cr_retval cr /\
+            Mem.inject inj (cr_mem cr) m' /\
             (* behavior of the remaning trace *)
-            rel (v, t) (cr_mem cr) /\
-            (* mem change only happened to module variables *)
-            Mem.unchanged_on (non_module_var se p) (cq_mem cq) (cr_mem cr);
-      (* the codition that p faithfully implements the spec *)
+            rel (v, t) m';
       correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
     }.
 End CORRECTNESS.
@@ -131,11 +127,11 @@ Section GS_CORRECT.
   (* Since the getter/setter objects do not interact with the environment,
      their specifications are just a clique within the space of !obj *)
   Variable spec : clique (!gs_obj).
-
   (* The witness relation *)
   Variable gs_rel : token (!gs_obj) -> mem -> Prop.
   (* The condition on the initial memory *)
   Variable gs_init_mem : mem -> Prop.
+  Variable gs_inj : meminj.
   (* Proof obligation 1 *)
   Hypothesis gs_mem_scope :
     forall m m' t, Mem.unchanged_on (module_var se p) m m' -> gs_rel t m -> gs_rel t m'.
@@ -143,16 +139,18 @@ Section GS_CORRECT.
   Hypothesis gs_simulation :
     forall e t m,
       gs_rel (e :: t) m ->
-      exists cq cr,
-        has (objsig2lic gs_obj) (e, (cq, cr)) /\
+      exists cq cr m',
+        Mem.inject gs_inj (cq_mem cq) m /\
+        event_C_args gs_obj e = cq_args cq /\
         has clight_p (nil, (cq, cr)) /\
-        gs_rel t (cr_mem cr) /\
-        Mem.unchanged_on (non_module_var se p) (cq_mem cq) (cr_mem cr).
+        event_C_res gs_obj e = cr_retval cr /\
+        Mem.inject gs_inj (cr_mem cr) m' /\
+        gs_rel t m'.
   (* Proof obligation 3 *)
   Hypothesis gs_init_rel : forall m t, has spec t -> gs_init_mem m -> gs_rel t m.
 
   (* Adapt the correctness of a getter/setter object into the general form *)
-  Program Definition gs_correct : correctness p se empty_obj gs_obj (unit_trace_extend spec) :=
+  Program Definition gs_correct : correctness p se empty_obj gs_obj (unit_trace_extend spec) gs_inj:=
     {|
       rel '(u, o) m := gs_rel o m /\ u = nil;
       init_mem := gs_init_mem
@@ -165,12 +163,10 @@ Section GS_CORRECT.
   Next Obligation.
     intros s e t m. simpl.
     intros [rel ->]. exists nil, nil.
-    specialize (gs_simulation e t m rel) as [cq [cr [ev_match [ev_impl [rest unchanged]]]]].
-    exists cq, cr. split. auto.
-    split. apply ev_match.
-    split. exists nil.
-    split. constructor. apply ev_impl.
-    split; intuition.
+    specialize (gs_simulation e t m rel) as [cq [cr [m' [injm [arg [impl [res [injm' rest]]]]]]]].
+    exists cq, cr, m'.
+    intuition.
+    exists nil. split; intuition. constructor.
   Defined.
   Next Obligation.
     intros m [s t]. simpl.
@@ -189,16 +185,18 @@ Section ABSFUN_CORRECT.
   (* Since the absfun objects are linear, we can use their linear pattern as spec
      Regular externsion extends the linear paatern to the general form *)
   Variable spec : !underlay_obj --o overlay_obj.
+  Let absfun_inj : meminj := fun b => None.
   (* The proof obligation for absfun objects *)
   Hypothesis absfun_sim:
     forall s e,
       has spec (s, e) ->
       exists cq cr,
-        has (objsig2lic overlay_obj) (e, (cq, cr)) /\
-        has deepsea_p (s, (cq, cr)) /\
-        (cq_mem cq) = (cr_mem cr).
+        event_C_args overlay_obj e = cq_args cq /\
+        event_C_res overlay_obj e = cr_retval cr /\
+        has deepsea_p (s, (cq, cr)).
+
   (* Adapt the correctness of the absfun objects into the genral form *)
-  Program Definition absfun_correct : correctness p se underlay_obj overlay_obj (dag_ext spec) :=
+  Program Definition absfun_correct : correctness p se underlay_obj overlay_obj (dag_ext spec) absfun_inj :=
     {|
       rel '(s, t) _ := has (dag_ext spec) (s, t);
       init_mem _ := True;
@@ -216,13 +214,12 @@ Section ABSFUN_CORRECT.
       specialize (absfun_sim s0 e).
       subst ss. subst s.
       inversion lmap. subst.
-      specialize (absfun_sim H3) as [cq [cr [e_match [e_impl unchanged]]]].
-      exists cq, cr. split. auto.
-      split. apply e_match. split.
-      apply e_impl.
-      split. exists aa. split. auto. auto.
-      rewrite unchanged. apply Mem.unchanged_on_refl.
-  Defined.
+      specialize (absfun_sim H3) as [cq [cr [arg [res impl]]]].
+      exists cq, cr, m.
+      intuition. unfold absfun_inj. auto.
+
+      Focus 3. exists aa. intuition.
+      Admitted.
   Next Obligation.
     intros m [s t]. auto.
   Defined.
