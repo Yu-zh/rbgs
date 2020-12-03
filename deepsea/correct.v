@@ -4,7 +4,6 @@ Require Import compcert.common.LanguageInterface.
 Require Import compcert.common.Events.
 Require Import compcert.common.Globalenvs.
 Require Import models.Coherence.
-Require Import deepsea.xObjSem.
 Require Import examples.CompCertSem.
 Require Import examples.Bigstep.
 Require Import compcert.cfrontend.Clight.
@@ -16,8 +15,141 @@ Require Import compcert.lib.Integers.     (* ptrofs *)
 Require Import compcert.lib.Coqlib.       (* Z *)
 Require Import compcert.lib.Maps.         (* PTree.get *)
 Require Import compcert.common.Errors.    (* res *)
-Require Import DSCC.                      (* objsig2lic *)
 Require Import compcert.common.Memory.    (* unchanged_on *)
+Require Import compcert.cfrontend.Cop.    (* val_casted_list *)
+
+Section MEM_INJ.
+  Variable p: Clight.program.
+  Variable se: Genv.symtbl.
+  Let ge: genv := globalenv se p.
+  Variable w: meminj_thr.
+
+  Inductive match_tr: list (c_query * c_reply) -> list (c_query * c_reply) -> list (ccworld cc_injp) -> Prop:=
+  | match_tr_nil:
+      match_tr nil nil nil
+  | match_tr_cons wx q r q1 r1 rest rest1 rest_wx:
+      match_query cc_injp wx q q1 ->
+      (match_reply cc_injp wx r r1 -> match_tr rest rest1 rest_wx) ->
+      match_tr ((q, r)::rest) ((q1, r1)::rest1) (wx::rest_wx).
+  Lemma valid_query_match q q1:
+    match_query cc_inj w q q1 ->
+    Genv.is_internal ge (entry q) = true ->
+    Genv.is_internal ge (entry q1) = true.
+  Admitted.
+  Lemma initial_state_match vf vf1 vargs vargs1 m m1 f targs:
+    Val.inject w vf vf1 ->
+    Val.inject_list w vargs vargs1 ->
+    Mem.inject w m m1 ->
+    Genv.find_funct ge vf = Some (Internal f) ->
+    val_casted_list vargs targs ->
+    Ple (Genv.genv_next ge) (Mem.nextblock m) ->
+    Genv.find_funct ge vf1 = Some (Internal f) /\
+    val_casted_list vargs1 targs /\
+    Ple (Genv.genv_next ge) (Mem.nextblock m1).
+  Admitted.
+  Lemma eval_fun_match m m1 vf vf1 vargs vargs1 m' tr vres:
+    Val.inject w vf vf1 ->
+    Val.inject_list w vargs vargs1 ->
+    Mem.inject w m m1 ->
+    eval_funcall ge m vf vargs m' tr vres ->
+    exists m'1 tr1 vres1 wx,
+      eval_funcall ge m1 vf1 vargs1 m'1 tr1 vres1 /\
+      Val.inject w vres vres1 /\
+      match_tr tr tr1 wx /\
+      Mem.inject w m' m'1.
+  Admitted.
+  Lemma bigstep_match:
+    forall tr q r,
+      bigstep_lmaps ge tr (q, r) ->
+      forall q',
+        match_query cc_inj w q q' ->
+        exists tr' r' wx,
+          bigstep_lmaps ge tr' (q', r') /\
+          match_reply cc_inj w r r' /\
+          match_tr tr tr' wx.
+  Proof.
+    intros tr q r bigstep q' q_match.
+    inversion bigstep. subst tr0 q0 r0.
+    exploit valid_query_match.
+    exact q_match. exact H1. clear H1. intros h1.
+    rewrite H2 in q_match. inversion q_match. subst m1 vf1 sg vargs1.
+    exploit initial_state_match.
+    exact H10. exact H11. exact H12.
+    exact H3. clear H3. exact H5. clear H5. exact H6. clear H6.
+    intros [h2 [h3 h4]].
+    exploit eval_fun_match.
+    exact H10. exact H11. exact H12.
+    exact H8.
+    intros [m1' [tr1 [vres1 [eval1 [resinj [trinj minj]]]]]].
+    eexists _, _.
+    split.
+    - econstructor. subst q'. exact h1. reflexivity. exact h2. exact H4. exact h3. exact h4.
+      exact eval1. reflexivity.
+    - split.
+      subst r. econstructor. apply mit_incr_refl. exact resinj. exact minj.
+      admit. admit.
+      exact trinj.
+  Admitted.
+
+End MEM_INJ.
+
+Section ABS_LI.
+  (* This section defines a language interface with memory abstracted out *)
+  Record d_query :=
+    dq {
+        dq_vf: val;
+        dq_sg: signature;
+        dq_args: list val;
+      }.
+  Record d_reply :=
+    dr {
+        dr_retval: val;
+      }.
+  Canonical Structure li_d :=
+    {|
+      query := d_query;
+      reply := d_reply;
+      entry := dq_vf;
+    |}.
+  Inductive q_rel: query li_d -> query li_c -> mem -> Prop:=
+  | q_rel_intro:
+      forall vf sg args m,
+        q_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
+              ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}) m.
+  Inductive r_rel: reply li_d -> reply li_c -> mem -> Prop:=
+    r_rel_intro:
+      forall ret m,
+        r_rel ({|dr_retval:=ret|})
+              ({|cr_retval:=ret;cr_mem:=m|}) m.
+  Inductive qr_rel_list: list (query li_d * reply li_d) -> list (query li_c * reply li_c) -> Prop:=
+  | qr_rel_nil: qr_rel_list nil nil
+  | qr_rel_cons:
+      forall dq dr cq cr ds cs m m',
+        q_rel dq cq m ->
+        r_rel dr cr m' ->
+        qr_rel_list ds cs ->
+        qr_rel_list ((dq, dr)::ds) ((cq, cr)::cs).
+  Inductive li_rel: (query li_d * reply li_d) -> (query li_c * reply li_c) -> Prop:=
+  | rel_intro:
+      forall vf sg args ret m,
+        li_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|}, {|dr_retval:=ret|})
+               ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}, {|cr_retval:=ret;cr_mem:=m|}).
+  Local Obligation Tactic := idtac.
+  Program Definition li_dc: li_d --o li_c :=
+    {|
+      has '(d, c) := li_rel d c
+    |}.
+  Next Obligation.
+    intros [[dq1 dr1] [cq1 cr1]] [[dq2 dr2] [cq2 cr2]]. simpl.
+    intros rel1 rel2. intuition.
+    - destruct cq1. destruct cq2. inversion H. clear H. subst.
+      inversion rel1. subst. inversion rel2. subst.
+      f_equal. exploit H1. auto. congruence.
+    - injection H. destruct cr1. destruct cr2. destruct cq1. destruct cq2.
+      inversion rel1. inversion rel2. subst. intros.
+      f_equal. congruence. congruence.
+  Defined.
+End ABS_LI.
 
 Section MODULE_VAR.
   Variable se : Genv.symtbl.
@@ -36,12 +168,11 @@ End MODULE_VAR.
 
 Section MEM_ABSTRACTION.
   Variable inj: meminj_thr.
-  Variable obj: ObjSig.
-  Variable p_abs: !obj --o li_c.
-  Variable p_con: !obj --o li_c.
+  Variable p_abs: !li_d --o li_c.
+  Variable p_con: !li_d --o li_c.
 
-  Definition mem_refine : Prop :=
-    forall s q r q',
+  Definition mem_refine (q: query li_c)(r: reply li_c): Prop :=
+    forall s q',
       has p_abs (s, (q, r)) ->
       cc_inj_query inj q q' ->
       exists r',
@@ -54,14 +185,12 @@ Section CORRECTNESS.
   Variable p : Clight.program.
   Variable se : Genv.symtbl.
   Let clight_p : !li_c --o li_c := clight_bigstep p se. (* the semantics of the clight program *)
-  Variable underlay_obj: ObjSig.
-  Variable overlay_obj: ObjSig.
   (* the semantics of the clight program on top of a deepsea underlay *)
-  Let deepsea_p : !underlay_obj --o li_c := clight_p @ !(objsig2lic underlay_obj).
+  Let d_p : !li_d --o li_c := clight_p @ !li_dc.
   (* the coherent space where specification lives in *)
-  Let spec_space : space := !underlay_obj --o !overlay_obj.
+  Let spec_space : space := !li_d --o !li_d.
   (* the specification *)
-  Variable spec : !underlay_obj --o !overlay_obj.
+  Variable spec : !li_d --o !li_d.
 
   Record correctness :=
     {
@@ -71,17 +200,15 @@ Section CORRECTNESS.
       init_mem : mem -> Prop;
       mem_scope : forall m m' t, Mem.unchanged_on (module_var se p) m m' -> rel t m -> rel t m';
       simulation:
-        forall s e t m,
-          rel (s, e::t) m ->
+        forall s dq dr t m,
+          rel (s, (dq, dr)::t) m ->
           exists u v cr cq m',
             s = u ++ v /\
             (* Clight implementation simulates deepsea event e *)
-            m = cq_mem cq /\
-            event_C_args overlay_obj e = cq_args cq /\
-            has deepsea_p (u, (cq, cr)) /\
-            m' = cr_mem cr /\
-            event_C_res overlay_obj e = cr_retval cr /\
-            Mem.unchanged_on (module_var se p) m m' /\
+            q_rel dq cq m /\
+            has d_p (u, (cq, cr)) /\
+            r_rel dr cr m' /\
+            Mem.unchanged_on (non_module_var se p) m m' /\
             (* behavior of the remaning trace *)
             rel (v, t) m';
       correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
@@ -102,25 +229,36 @@ Section CORRECTNESS.
       final_mem_match s m ->
       final_mem_match (q :: s) m.
   Definition final_state (co: correctness):
-    forall us es m,
-      rel co (us, es) m ->
-      exists ces m',
-        init_mem_match ces m /\
-        has (dag_ext deepsea_p) (us, ces) /\
-        final_mem_match ces m' /\
-        Mem.unchanged_on (module_var se p) m m'.
+    forall us ds m,
+      rel co (us, ds) m ->
+      exists cs m',
+        init_mem_match cs m /\
+        has (dag_ext d_p) (us, cs) /\
+        qr_rel_list ds cs /\ 
+        final_mem_match cs m' /\
+        Mem.unchanged_on (non_module_var se p) m m'.
   Proof.
-    destruct co as [rel init_mem scope sim init_state]. simpl.
-    intros us es.
+    destruct co as [rel ? scope sim ?]. simpl.
+    intros us ds.
     revert us.
-    induction es.
+    induction ds.
     - intros. assert (us = nil). admit.
-      subst. exists nil, m. admit.
-    - intros. specialize (sim _ _ _ _ H) as [vs [ws [r0 [q0 [m0 [useq [q0m [q0arg [impl [r0m [r0ret [m0_unchanged rest]]]]]]]]]]]].
-      specialize (IHes _ _ rest). Admitted.
-  
+      subst. exists nil, m.
+      split. constructor.
+      split. exists nil. split. constructor. constructor.
+      split. constructor. split. constructor. apply Mem.unchanged_on_refl.
+    - intros. destruct a as [dq dr].
+      specialize (sim _ _ _ _ _ H) as [vs [ws [cr0 [cq0 [m0 [useq [q0rel [impl [r0rel [m0_unchanged rest]]]]]]]]]].
+      specialize (IHds _ _ rest) as [cs1 [m1 [mm1 [[dus [dus_concat dus_lmap]] [dc_map [mm2 m1_unchanged]]]]]].
+      exists ((cq0, cr0)::cs1). exists m1.
+      split. constructor. inversion q0rel. auto.
+      split. exists (vs::dus). split. rewrite useq. constructor. auto. constructor. auto. auto.
+      split. econstructor. exact q0rel. exact r0rel. auto.
+      split. constructor. auto.
+      eapply Mem.unchanged_on_trans. exact m0_unchanged. exact m1_unchanged.
+  Admitted.
   Section SOUND.
-    Context {correct: correctness}.
+    Context {co: correctness}.
     Variable c: Clight.program.
     Variable c_se: Genv.symtbl.
     Let inj: meminj_thr :=
@@ -134,14 +272,25 @@ Section CORRECTNESS.
         mit_l := 1%positive;
         mit_r := 1%positive
       |}.
-    Let p_abs: !underlay_obj --o li_c :=
-      (clight_bigstep c c_se) @ !(objsig2lic overlay_obj) @ spec.
-    Let p_con: !underlay_obj --o li_c :=
-      (clight_bigstep c c_se) @ (dag_ext deepsea_p).
-    Theorem mem_abs_sound: mem_refine inj underlay_obj p_abs p_con.
+    Let p_abs: !li_d --o li_c :=
+      clight_bigstep c c_se @ !li_dc @ spec.
+    Let p_con: !li_d --o li_c :=
+      clight_bigstep c c_se @ (dag_ext d_p).
+    Theorem mem_abs_sound:
+      forall q r,
+        (forall m, Mem.inject inj (cq_mem q) m -> init_mem co m) ->
+        mem_refine inj p_abs p_con q r.
     Proof.
-      intros s q r q' abs_map injq.
-      simpl in abs_map. destruct abs_map as [p_es [[spec_es [has_spec p_rel]] c_qr]].
+      intros q r m_cond. intros us q' abs_map qinj. inversion qinj. subst.
+      specialize (m_cond _ H1).
+      simpl in abs_map. destruct abs_map as [abs_cs [[spec_ds [has_spec dc_rel]] abs_impl_qr]].
+      exploit (correct_cond co). exact has_spec. exact m_cond. intros init_rel.
+      exploit (final_state co). exact init_rel.
+      intros [cs [mc' [mm0 [impl [rel_cs [mm1 unchanged]]]]]].
+      exists ({|cr_retval:= cr_retval r; cr_mem:= mc'|}).
+      split. simpl. exists cs.
+      split. apply impl.
+      
       
   End SOUND.
 End CORRECTNESS.
