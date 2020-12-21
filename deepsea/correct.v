@@ -93,63 +93,6 @@ Section MEM_INJ.
 
 End MEM_INJ.
 
-Section ABS_LI.
-  (* This section defines a language interface with memory abstracted out *)
-  Record d_query :=
-    dq {
-        dq_vf: val;
-        dq_sg: signature;
-        dq_args: list val;
-      }.
-  Record d_reply :=
-    dr {
-        dr_retval: val;
-      }.
-  Canonical Structure li_d :=
-    {|
-      query := d_query;
-      reply := d_reply;
-      entry := dq_vf;
-    |}.
-  Inductive q_rel: query li_d -> query li_c -> mem -> Prop:=
-  | q_rel_intro:
-      forall vf sg args m,
-        q_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
-              ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}) m.
-  Inductive r_rel: reply li_d -> reply li_c -> mem -> Prop:=
-    r_rel_intro:
-      forall ret m,
-        r_rel ({|dr_retval:=ret|})
-              ({|cr_retval:=ret;cr_mem:=m|}) m.
-  Inductive qr_rel_list: list (query li_d * reply li_d) -> list (query li_c * reply li_c) -> Prop:=
-  | qr_rel_nil: qr_rel_list nil nil
-  | qr_rel_cons:
-      forall dq dr cq cr ds cs m m',
-        q_rel dq cq m ->
-        r_rel dr cr m' ->
-        qr_rel_list ds cs ->
-        qr_rel_list ((dq, dr)::ds) ((cq, cr)::cs).
-  Inductive li_rel: (query li_d * reply li_d) -> (query li_c * reply li_c) -> Prop:=
-  | rel_intro:
-      forall vf sg args ret m,
-        li_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|}, {|dr_retval:=ret|})
-               ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}, {|cr_retval:=ret;cr_mem:=m|}).
-  Local Obligation Tactic := idtac.
-  Program Definition li_dc: li_d --o li_c :=
-    {|
-      has '(d, c) := li_rel d c
-    |}.
-  Next Obligation.
-    intros [[dq1 dr1] [cq1 cr1]] [[dq2 dr2] [cq2 cr2]]. simpl.
-    intros rel1 rel2. intuition.
-    - destruct cq1. destruct cq2. inversion H. clear H. subst.
-      inversion rel1. subst. inversion rel2. subst.
-      f_equal. exploit H1. auto. congruence.
-    - injection H. destruct cr1. destruct cr2. destruct cq1. destruct cq2.
-      inversion rel1. inversion rel2. subst. intros.
-      f_equal. congruence. congruence.
-  Defined.
-End ABS_LI.
 
 Section MODULE_VAR.
   Variable se : Genv.symtbl.

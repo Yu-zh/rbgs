@@ -1,0 +1,127 @@
+Require Import Relations RelationClasses.
+Require Import List.
+Require Import compcert.common.LanguageInterface.
+Require Import compcert.common.Events.
+Require Import compcert.common.Globalenvs.
+Require Import models.Coherence.
+Require Import examples.CompCertSem.
+Require Import examples.Bigstep.
+Require Import compcert.cfrontend.Clight.
+Require Import compcert.common.Memory. (* mem *)
+Require Import compcert.common.AST.    (* Gvar *)
+Require Import compcert.cfrontend.Ctypes. (* type *)
+Require Import compcert.common.Values.    (* block *)
+Require Import compcert.lib.Integers.     (* ptrofs *)
+Require Import compcert.lib.Coqlib.       (* Z *)
+Require Import compcert.lib.Maps.         (* PTree.get *)
+Require Import compcert.common.Errors.    (* res *)
+Require Import compcert.common.Memory.    (* unchanged_on *)
+Require Import compcert.cfrontend.Cop.    (* val_casted_list *)
+
+Section ABS_LI.
+  (* This section defines a language interface with memory abstracted out *)
+  Record d_query :=
+    dq {
+        dq_vf: val;
+        dq_sg: signature;
+        dq_args: list val;
+      }.
+  Record d_reply :=
+    dr {
+        dr_retval: val;
+      }.
+  Canonical Structure li_d :=
+    {|
+      query := d_query;
+      reply := d_reply;
+      entry := dq_vf;
+    |}.
+  Inductive q_rel: query li_d -> query li_c -> mem -> Prop:=
+  | q_rel_intro:
+      forall vf sg args m,
+        q_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
+              ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}) m.
+  Inductive r_rel: reply li_d -> reply li_c -> mem -> Prop:=
+    r_rel_intro:
+      forall ret m,
+        r_rel ({|dr_retval:=ret|})
+              ({|cr_retval:=ret;cr_mem:=m|}) m.
+  Inductive qr_rel_list: list (query li_d * reply li_d) -> list (query li_c * reply li_c) -> Prop:=
+  | qr_rel_nil: qr_rel_list nil nil
+  | qr_rel_cons:
+      forall dq dr cq cr ds cs m m',
+        q_rel dq cq m ->
+        r_rel dr cr m' ->
+        qr_rel_list ds cs ->
+        qr_rel_list ((dq, dr)::ds) ((cq, cr)::cs).
+  Inductive li_rel: (query li_d * reply li_d) -> (query li_c * reply li_c) -> Prop:=
+  | rel_intro:
+      forall vf sg args ret m,
+        li_rel ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|}, {|dr_retval:=ret|})
+               ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}, {|cr_retval:=ret;cr_mem:=m|}).
+  Local Obligation Tactic := idtac.
+  Program Definition li_dc: li_d --o li_c :=
+    {|
+      has '(d, c) := li_rel d c
+    |}.
+  Next Obligation.
+    intros [[dq1 dr1] [cq1 cr1]] [[dq2 dr2] [cq2 cr2]]. simpl.
+    intros rel1 rel2. intuition.
+    - destruct cq1. destruct cq2. inversion H. clear H. subst.
+      inversion rel1. subst. inversion rel2. subst.
+      f_equal. exploit H1. auto. congruence.
+    - injection H. destruct cr1. destruct cr2. destruct cq1. destruct cq2.
+      inversion rel1. inversion rel2. subst. intros.
+      f_equal. congruence. congruence.
+  Defined.
+End ABS_LI.
+
+Let spec_space: space := !li_d --o !li_d.
+Section ABS_SEMANTICS.
+  Variable spec: clique spec_space.
+  Variable ge: genv.
+  Variable function_entry: function -> list val -> mem -> env -> temp_env -> mem -> Prop.
+  Definition state : Type := Clight.state * token spec_space.
+
+  Inductive step: state -> trace -> state -> Prop :=
+  | step_clight: forall s s' t tr,
+      Clight.step ge function_entry s t s' ->
+      step (s, tr) t (s', tr).
+
+  Inductive initial_state: c_query -> state -> Prop :=
+  | initial_state_intro:
+      forall q s tr,
+        Clight.initial_state ge q s ->
+        (* TODO: initial abstract state *)
+        has spec tr ->
+        initial_state q (s, tr).
+  Inductive at_external: state -> d_query -> Prop :=
+  | at_external_intro name sg targs tres cconv vf vargs k m tr (dreply: d_reply) es:
+      let f := External (EF_external name sg) targs tres cconv in
+      let dquery := dq vf sg vargs in
+      Genv.find_funct ge vf = Some f ->
+      at_external
+        (Callstate vf vargs k m, (es, (dquery, dreply)::tr))
+        dquery.
+  Inductive after_external: state -> d_reply -> state -> Prop :=
+  | after_external_intro vf sg vargs k m vres es xs ys tr:
+      let dquery := dq vf sg vargs in
+      let dreply := dr vres in
+      (* Transit to the next "state" *)
+      es = xs ++ ys ->
+      has spec (ys, tr) ->
+      after_external
+        (Callstate vf vargs k m, (es, (dquery, dreply)::tr))
+        dreply
+        (Returnstate vres k m, (ys, tr)).
+  Inductive final_state: state -> c_reply -> Prop :=
+  | final_state_intro:
+      forall s tr r,
+        Clight.final_state s r ->
+        final_state (s, tr) r.
+End ABS_SEMANTICS.
+
+Definition step_abs (ge: genv) := step ge (Clight.function_entry1 ge).
+Definition semantics_abs (p: Clight.program)(spec: clique spec_space) :=
+  Smallstep.Semantics_gen step_abs (initial_state spec) at_external (after_external spec) final_state globalenv p.
+Definition semantics_abs
