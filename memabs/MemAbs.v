@@ -18,6 +18,8 @@ Require Import compcert.common.Errors.    (* res *)
 Require Import compcert.common.Memory.    (* unchanged_on *)
 Require Import compcert.cfrontend.Cop.    (* val_casted_list *)
 Require Import compcert.common.Smallstep.
+Require Import compcert.cklr.CKLR.
+Require Import compcert.cklr.Clightrel.
 
 (* Define a language interface with memory abstracted out *)
 Record d_query :=
@@ -92,7 +94,7 @@ Section TRACE_STATE.
   Qed.
 End TRACE_STATE.
 
-Module Sem1.
+Module Abs.
   Section ABS_SEMANTICS.
     Context {liA liB: language_interface} (Σ: !liA --o !liA) (C: Smallstep.semantics liB liB).
     Variable li_rel: (query liA * reply liA) -> (query liB * reply liB) -> Prop.
@@ -135,16 +137,16 @@ Module Sem1.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End ABS_SEMANTICS.
-  Definition semantics_spec {liA liB: language_interface} skel li_rel (Σ: !liA --o !liA) (C: Smallstep.semantics liB liB) :=
+  Definition semantics {liA liB: language_interface} skel li_rel (Σ: !liA --o !liA) (C: Smallstep.semantics liB liB) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts Σ C li_rel se;
     |}.
-  Definition c_semantics_spec (Σ: !li_d --o !li_d) (p: Clight.program): Smallstep.semantics li_null li_c :=
-    semantics_spec (AST.erase_program p) li_rel Σ (semantics1 p).
-End Sem1.
+  Definition c_semantics (Σ: !li_d --o !li_d) (p: Clight.program): Smallstep.semantics li_null li_c :=
+    semantics (AST.erase_program p) li_rel Σ (semantics1 p).
+End Abs.
 
-Module Sem2.
+Module Impl.
   Section IMPL_SEMANTICS.
     Context {liA: language_interface} (σ: !liA --o liA) (C: Smallstep.semantics liA liA).
     Variable se: Genv.symtbl.
@@ -183,39 +185,102 @@ Module Sem2.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End IMPL_SEMANTICS.
-  Definition semantics_impl {liA: language_interface} skel (σ: !liA --o liA) (C: Smallstep.semantics liA liA) :=
+  Definition semantics {liA: language_interface} skel (σ: !liA --o liA) (C: Smallstep.semantics liA liA) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts σ C se;
     |}.
-  Definition c_semantics_impl (σ: !li_c --o li_c) (p: Clight.program): Smallstep.semantics li_null li_c :=
-    semantics_impl (AST.erase_program p) σ (semantics1 p).
-End Sem2.
+  Definition c_semantics (σ: !li_c --o li_c) (p: Clight.program): Smallstep.semantics li_null li_c :=
+    semantics (AST.erase_program p) σ (semantics1 p).
+End Impl.
 
-Section ABS_CKLR.
-  Variable ge: genv.
-  
-  Inductive module_var: ident -> type -> block -> ptrofs -> Prop :=
+Section CORRECT.
+  Inductive module_var (ge: genv) : block -> Z -> Prop :=
   | module_var_intro id b (v : globvar type) (ty : type):
       Genv.find_symbol ge id = Some b ->
       Genv.find_def ge b = Some (Gvar v) ->
       ty = gvar_info v ->
-      module_var id ty b Ptrofs.zero.
+      module_var ge b (sizeof ge ty).
+  Definition non_module_var ge b ofs := ~ module_var ge b ofs.
+  Variable p: Clight.program.
+  Variable se: Genv.symtbl.
+  Let clight_p: !li_c --o li_c := clight_bigstep p se. (* the semantics of the clight program *)
+  (* the semantics of the clight program on top of a deepsea underlay *)
+  Let d_p : !li_d --o li_c := clight_p @ !li_dc.
+  (* the coherent space where specification lives in *)
+  Let spec_space : space := !li_d --o !li_d.
+  (* the specification *)
+  Variable spec : !li_d --o !li_d.
 
+  Record correctness :=
+    {
+      (* rel : the relation that relates specifications and the memory *)
+      rel :> token spec_space -> mem -> Prop;
+      (* the condition that the memory has to satisfy *)
+      init_mem : mem -> Prop;
+      mem_scope : forall m m' t, Mem.unchanged_on (module_var (Clight.globalenv se p)) m m' -> rel t m -> rel t m';
+      simulation:
+        forall s dq dr t m,
+          rel (s, (dq, dr)::t) m ->
+          exists u v cr cq m',
+            s = u ++ v /\
+            (* Clight implementation simulates deepsea event e *)
+            q_rel dq cq m /\
+            has d_p (u, (cq, cr)) /\
+            r_rel dr cr m' /\
+            Mem.unchanged_on (non_module_var (Clight.globalenv se p)) m m' /\
+            (* behavior of the remaning trace *)
+            rel (v, t) m';
+      correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
+    }.
+End CORRECT.
+
+
+Section SIM.
+  Context {p: Clight.program} {se: Genv.symtbl} {Σ: !li_d --o !li_d} (correct: correctness p se Σ).
+  Variable C: Clight.program.
+  Definition sem_abs: semantics li_null li_c := Abs.c_semantics Σ C.
+  Definition sem_impl: semantics li_null li_c := Impl.c_semantics (clight_bigstep p se) C.
+  Notation st := (Abs.st (semantics1 C)).
+  Definition mem_from_state (s: Clight.state): mem :=
+    match s with
+    | State _ _ _ _ _ m => m
+    | Callstate _ _ _ m => m
+    | Returnstate _ _ m => m
+    end.
+  Inductive state_match R w: state sem_abs -> state sem_impl -> Prop :=
+    ms_intro s1 s2 σ:
+      Clightrel.state_match R w s1 s2 ->
+      (forall t, has σ t -> correct t (mem_from_state s2)) ->
+      state_match R w (st s1 σ) s2.
+
+  Variable R: cklr.             (* this will be instantiated to the cklr defined below *)
+  Theorem fsim_abs_impl:
+    forward_simulation cc_id (cc_c R) sem_abs sem_impl.
+  Admitted.
+End SIM.
+
+Section ABS_CKLR.
+
+  Variable locals: (block -> Z -> Prop).
   Inductive abs_world :=
-    absw (vals: PTree.t val).
+    absw (m: mem).
+  Inductive abs_acc: relation abs_world :=
+    acc_intro m1 m2:
+      Mem.unchanged_on locals m1 m2 ->
+      abs_acc (absw m1) (absw m2).
 
-  Inductive value_match (ty: type) (m: mem) (b: block) (ofs: ptrofs): option val -> Prop :=
-  | value_match_some v:
-      deref_loc ty m b ofs v ->
-      value_match ty m b ofs (Some v).
-  Inductive abs_match_mem: abs_world -> relation mem :=
-    abs_match_mem_intro m1 m2 vs:
+  Inductive abs_mm: abs_world -> mem -> mem -> Prop :=
+    match_intro m1 m2:
       Mem.extends m1 m2 ->
-      (forall id ty b ofs,
-          module_var id ty b ofs ->
-          (forall k p, ~Mem.perm m1 b (Ptrofs.unsigned ofs) k p) /\
-          value_match ty m2 b ofs (vs ! id)) ->
-      abs_match_mem (absw vs) m1 m2.
+      abs_mm (absw m2) m1 m2.
+  Program Definition abs: cklr :=
+    {|
+    world := abs_world;
+    wacc := abs_acc;
+    mi w := inject_id;
+    match_mem w := abs_mm w;
+    match_stbls w := eq;
+    |}.
   
 End ABS_CKLR.
