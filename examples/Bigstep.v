@@ -62,7 +62,7 @@ Section BIGSTEP.
   [m1] is the initial memory state, [m2] the final memory state.
   [t] is the trace of input/output events performed during this
   evaluation. *)
-  
+
   Inductive exec_stmt: env -> temp_env -> mem -> statement ->
                        temp_env -> mem -> token (!li_c) -> outcome -> Prop :=
   | exec_Sskip: forall e le m,
@@ -235,11 +235,11 @@ Section BIGSTEP_TO_TRANSITIONS.
         append x y := x ++ y
       }.
   End MONOID.
-  
+
   Hint Rewrite app_nil_r app_assoc : list_rewrite.
   Hint Unfold empty append list_monoid.
   Ltac monoid_solve := autounfold; autorewrite with list_rewrite; auto.
-  
+
   Section CLOSURES.
     Variable genv: Type.
     Variable state: Type.
@@ -317,14 +317,18 @@ Section BIGSTEP_TO_TRANSITIONS.
       inversion 1. subst.
       econstructor; [ auto | eauto | ].
       clear H H2 H3. induction H5.
-      - apply lts_trace_final. auto.
+      - eapply lts_trace_steps. apply Smallstep.star_refl.
+        eapply lts_trace_final. auto.
       - specialize (IHstar H6).
-        inversion H; subst.
-        + eapply lts_trace_step; eauto.
-        + eapply lts_trace_external; eauto.
+        inversion H; subst; cbn.
+        + inv IHstar.
+          eapply lts_trace_steps; eauto.
+          eapply Smallstep.star_step; eauto.
+        + eapply lts_trace_steps. apply Smallstep.star_refl.
+          eapply lts_trace_external; eauto.
     Qed.
   End TRANSITION.
-  
+
   Variable p : program.
   Variable se : Genv.symtbl.
   Let sem : semantics li_c li_c := Clight.semantics1 p.
@@ -437,7 +441,7 @@ Section BIGSTEP_TO_TRANSITIONS.
       eapply star_left. apply silent_step. eapply step_loop.
       eapply star_trans. eexact A1.
       eapply star_left with (s2 := State f s2 (Kloop2 s1 s2 k) e le1 m1).
-      inv H1; inv B1; apply silent_step; constructor; auto. 
+      inv H1; inv B1; apply silent_step; constructor; auto.
       eapply star_trans. eexact A2.
       unfold S3. inversion H4; subst.
       inv B2. apply star_one. apply silent_step. constructor. apply star_refl.
