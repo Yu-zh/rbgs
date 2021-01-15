@@ -211,11 +211,8 @@ Module UnSem.
     Definition state : Type :=
       bool * trace_set.
 
-    (* Inductive step : state -> trace -> state -> Prop := *)
-    (*   step_intro σ: *)
-    (*     step (true, σ) E0 (false, σ). *)
     Inductive step : state -> trace -> state -> Prop :=
-      step_intro σ t:
+    | step_progress σ t:
         has σ t ->
         step (true, σ) E0 (false, σ).
 
@@ -274,8 +271,11 @@ Module GC.
   Definition measure : (@UnSem.state liA liB) -> nat :=
     fun '(b, _) => if b then 1%nat else 0%nat.
 
+  (* Lemma sem_unsem_gc: *)
+  (*   (forall se, ref (Σ se) (compcerto_lmap L HL se)) <-> *)
+  (*   forward_simulation cc_id cc_id (UnSem.semantics (skel L) Σ (fun se => valid_query (L se))) L. *)
   Lemma sem_unsem_gc:
-    (forall se, ref (Σ se) (compcerto_lmap L HL se)) <->
+    (forall se (Hse:   Genv.valid_for (skel L) se), ref (Σ se) (compcerto_lmap L HL se)) <->
     forward_simulation cc_id cc_id (UnSem.semantics (skel L) Σ (fun se => valid_query (L se))) L.
   Proof.
     split.
@@ -284,79 +284,66 @@ Module GC.
       apply Forward_simulation
         with (fsim_match_states := fun se _ _ => match_states se)
              (fsim_order := lt);
-          auto using lt_wf.
-        intros se _ [ ] [ ] Hse.
-        split; cbn; try congruence.
-        + intros q _ _ [ ] [[t r] Htr]. cbn in *.
-          apply MATCH in Htr. cbn in Htr. inv Htr.
-          exists 1%nat, s. split; auto. clear - MATCH H3.
-          apply (match_states_intro _ true). intros t r Htr.
-          apply MATCH in Htr. cbn in Htr. inv Htr.
-          assert (s0 = s) by eauto using sd_initial_determ; subst.
-          eauto.
-        + intros ? S s r Hs Hr. destruct Hr. inv Hs. apply H4 in H. inv H. cbn.
-          eauto.
-        + intros ? S s q Hs Hq. destruct Hq. inv Hs. apply H4 in H. inv H. cbn in *.
-          exists tt, qx. repeat apply conj; auto. clear - HL H4.
-          intros rx _ s' [ ] Hs'. inv Hs'.
-          cbn in H0. destruct t as [t r]. destruct H0 as (qx & H).
-          apply H4 in H. inv H. cbn in *.
-          exists (Nat.b2n true), s'. split; auto. clear - HL H4 H6.
-          constructor. intros t r [qx Hqx]. apply H4 in Hqx. inv Hqx.
-          assert (s'0 = s') by eauto using sd_after_external_determ; subst.
-          auto.
-        + intros _ _ _ [σ [t r] Htr] ? s Hs. inv Hs.
-          (* Two situations: (1) σ is empty, meaning that the program gets stuck or
-             diverges; (2) otherwise, the program takes zero or several internal
-             steps and reach another state which is either [at_external] or
-             [final_state] *)
-          apply H3 in Htr. inv Htr. exists 0%nat, s'. split. right. auto.
-          apply (match_states_intro _ false). intros t' r' Htr'.
-          apply H3 in Htr'. inv Htr'.
-          assert (s' = s'0) as <- by eauto using star_step_determ. auto.
+        auto using lt_wf.
+      intros se _ [ ] [ ] Hse. specialize (MATCH _ Hse).
+      split; cbn; try congruence.
+      + intros q _ _ [ ] [[t r] Htr]. cbn in *.
+        apply MATCH in Htr. cbn in Htr. inv Htr.
+        exists 1%nat, s. split; auto. clear - MATCH H3.
+        apply (match_states_intro _ true). intros t r Htr.
+        apply MATCH in Htr. cbn in Htr. inv Htr.
+        assert (s0 = s) by eauto using sd_initial_determ; subst.
+        eauto.
+      + intros ? S s r Hs Hr. destruct Hr. inv Hs. apply H4 in H. inv H. cbn.
+        eauto.
+      + intros ? S s q Hs Hq. destruct Hq. inv Hs. apply H4 in H. inv H. cbn in *.
+        exists tt, qx. repeat apply conj; auto. clear - HL H4.
+        intros rx _ s' [ ] Hs'. inv Hs'.
+        cbn in H0. destruct t as [t r]. destruct H0 as (qx & H).
+        apply H4 in H. inv H. cbn in *.
+        exists (Nat.b2n true), s'. split; auto. clear - HL H4 H6.
+        constructor. intros t r [qx Hqx]. apply H4 in Hqx. inv Hqx.
+        assert (s'0 = s') by eauto using sd_after_external_determ; subst.
+        auto.
+      + intros _ _ _ [σ [t r] Htr] ? s Hs. inv Hs.
+        apply H3 in Htr. inv Htr. exists 0%nat, s'. split. right. auto.
+        apply (match_states_intro _ false). intros t' r' Htr'.
+        apply H3 in Htr'. inv Htr'.
+        assert (s' = s'0) as <- by eauto using star_step_determ. auto.
     - set (LΣ := UnSem.semantics _ _ _).
-      intros MATCH.
-      destruct MATCH. destruct X.
-      intros se [t [q r]] H. cbn.
-      cbn in fsim_lts.
-      exploit (fsim_lts se se tt). reflexivity. admit.
-      intros [? ? ? ? ?]. simpl in *.
-      exploit (fsim_match_initial_states q q); auto.
+      intros FSIM se Hse.
+      destruct FSIM as [[ind ord match_states _ Hsim _]]. cbn in *.
+      specialize (Hsim se se tt eq_refl Hse).
+      intros [t [q r]] H. cbn.
+      edestruct @fsim_match_initial_states as (i & s & [Hi Hs]); eauto.
+      reflexivity. econstructor. instantiate (1 := (_, _)). apply H.
       econstructor.
-      + cbn. instantiate (1 := (_, _)). cbn. apply H.
-      + intros (i & s & [Hi Hs]).
-        econstructor.
-        * admit. (* vq doesn't have to be valid_query from lts. Could be something in coh  *)
-        * apply Hi.
-        * assert (has (UnSem.initial_clique (Σ se) q) (t, r)).
-          apply H. clear H. clear Hi.
-          clear fsim_match_valid_query fsim_match_initial_states.
-          revert Hs H0. generalize (UnSem.initial_clique (Σ se) q). revert s i.
-          {
-            induction t as [ | [q0 r0] ].
-            - intros s i t Hs Ht.
-              exploit fsim_simulation; [ econstructor; apply Ht | apply Hs | ].
-              intros (i' & s' & [Hstep Hs']).
-              exploit fsim_match_final_states;[ apply Hs' | econstructor; apply Ht | ].
-              intros (? & [Hr' <-]).
-              apply lts_trace_steps with (s'0 := s').
-              destruct Hstep. apply plus_star. apply H. apply H.
-              apply lts_trace_final. apply Hr'.
-            - intros s i σ Hs Ht.
-              exploit fsim_simulation; [ econstructor; apply Ht | apply Hs | ].
-              intros (i' & s' & [Hstep Hs']).
-              exploit fsim_match_external; [ apply Hs' | econstructor; apply Ht | ].
-              intros (? & ? & Hext & ? & ? & fsim_match_after_ext). rewrite <- H in *.
-              clear H H0 x.
-              exploit fsim_match_after_ext; [ reflexivity | econstructor | ].
-              cbn. instantiate (2 := (_, _)). cbn. eexists. apply Ht.
-              intros (? & s'' & Hr & Hs'').
-              apply lts_trace_steps with (s'0 := s').
-              destruct Hstep. apply plus_star. apply H. apply H.
-              apply lts_trace_external with (s'0 := s''). apply Hext. apply Hr.
-              eapply IHt. apply Hs''. cbn. eexists. apply Ht.
-          }
-  Admitted.
+      * admit. (* vq doesn't have to be valid_query from lts. Could be something in coh  *)
+      * apply Hi.
+      *
+        assert (has (UnSem.initial_clique (Σ se) q) (t, r)) by apply H.
+        clear H Hi.
+        revert Hs H0. generalize (UnSem.initial_clique (Σ se) q). revert s i.
+        {
+          induction t as [ | [q0 r0] ].
+          - intros s i t Hs Ht.
+            edestruct @fsim_simulation as (i' & s' & [Hstep Hs']); eauto. econstructor; apply Ht.
+            edestruct @fsim_match_final_states as (? & [Hr' hx]); eauto. econstructor; apply Ht.
+            apply lts_trace_steps with (s'0 := s').
+            destruct Hstep; [ now apply plus_star | easy ].
+            apply lts_trace_final. congruence.
+          - intros s i σ Hs Ht.
+            edestruct @fsim_simulation as (i' & s' & [Hstep Hs']); eauto. econstructor; apply Ht.
+            edestruct @fsim_match_external as (? & ? & Hext & ? & ? & fsim_match_after_ext); eauto.
+            econstructor; apply Ht.
+            edestruct fsim_match_after_ext as (? & s'' & Hr & Hs''); eauto. reflexivity.
+            econstructor. instantiate (1 := (_, _)). eexists. apply Ht.
+            apply lts_trace_steps with (s'0 := s').
+            destruct Hstep; [ now apply plus_star | easy ].
+            apply lts_trace_external with (s'0 := s''); try congruence.
+            eapply IHt. apply Hs''. cbn. eexists. apply Ht.
+        }
+    Admitted.
  End GC.
 End GC.
 (** ** Clight semantics *)
@@ -627,14 +614,12 @@ Section FSIM.
     - eauto.
     - clear - H Hs Ht1. revert i s2 Hs.
       induction Ht1; cbn; intros.
-      + (* final state *)
-        edestruct @fsim_match_final_states as (xr & Hs2 & Hxr); eauto.
-        destruct Hxr.
-        constructor; auto.
       + (* step *)
         edestruct @simulation_star as (j & s2' & Hs2' & Hs'); eauto using star_one.
-        revert Hs'. pattern s2, s2'.
-        eapply star_E0_ind; eauto using lts_trace_step.
+        econstructor. apply Hs2'. eapply IHHt1. apply Hs'.
+      + (* final state *)
+        edestruct @fsim_match_final_states as (xr & Hs2 & Hxr); eauto.
+        destruct Hxr. constructor; auto.
       + (* external interaction *)
         edestruct @fsim_match_external as (w & xq & Hq2 & Hxq & _ & Hrx); eauto.
         destruct Hxq.
