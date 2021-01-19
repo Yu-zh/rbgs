@@ -1,25 +1,10 @@
 Require Import Relations RelationClasses.
 Require Import List.
-Require Import compcert.common.LanguageInterface.
-Require Import compcert.common.Events.
-Require Import compcert.common.Globalenvs.
-Require Import models.Coherence.
-Require Import examples.CompCertSem.
-Require Import examples.Bigstep.
-Require Import compcert.cfrontend.Clight.
-Require Import compcert.common.Memory. (* mem *)
-Require Import compcert.common.AST.    (* Gvar *)
-Require Import compcert.cfrontend.Ctypes. (* type *)
-Require Import compcert.common.Values.    (* block *)
-Require Import compcert.lib.Integers.     (* ptrofs *)
-Require Import compcert.lib.Coqlib.       (* Z *)
-Require Import compcert.lib.Maps.         (* PTree.get *)
-Require Import compcert.common.Errors.    (* res *)
-Require Import compcert.common.Memory.    (* unchanged_on *)
-Require Import compcert.cfrontend.Cop.    (* val_casted_list *)
-Require Import compcert.common.Smallstep.
-Require Import compcert.cklr.CKLR.
-Require Import compcert.cklr.Clightrel.
+Require Import Integers Coqlib Maps.
+Require Import LanguageInterface Events Globalenvs Values Memory AST Errors Smallstep.
+Require Import Clight Ctypes Cop.
+Require Import CKLR Clightrel.
+Require Import Coherence CompCertSem Bigstep.
 
 (* Define a language interface with memory abstracted out *)
 Record d_query :=
@@ -78,7 +63,7 @@ Next Obligation.
 Defined.
 
 Section TRACE_STATE.
-  (* Since σ is not guaranteed to be a regular function, there is no way to "guess" the underlying 
+  (* Since σ is not guaranteed to be a regular function, there is no way to "guess" the underlying
      behavior w that corresponds to (qx, rx) *)
   Program Definition next {liA liB: language_interface} (σ : !liA --o !liB) w qx rx : !liA --o !liB :=
     {|
@@ -96,37 +81,47 @@ End TRACE_STATE.
 
 Module Abs.
   Section ABS_SEMANTICS.
-    Context {liA liB: language_interface} (Σ: !liA --o !liA) (C: Smallstep.semantics liB liB).
+    (* the linked system has type liA ->> liB *)
+    Context {liA liB: language_interface} (Σ: Genv.symtbl -> !liA --o !liA) (C: semantics liB liB).
     Variable li_rel: (query liA * reply liA) -> (query liB * reply liB) -> Prop.
     Variable se: Genv.symtbl.
 
-    Variant state : Type := st (s: Smallstep.state C) (σ: !liA --o !liA).
-    
+    Variant state : Type :=
+    | st (s: Smallstep.state C) (σ: !liA --o !liA)
+    (* s and σ constitute the state after the external call *)
+    | ext (s: Smallstep.state C) (t: list (token liA)) (σ: !liA --o !liA).
+
     Inductive step: state -> trace -> state -> Prop :=
     | step_internal: forall s s' t σ,
         Step (C se) s t s' ->
         step (st s σ) t (st s' σ)
-    | step_external: forall s s' qa ra qb rb σ w t,
+    | step_at_external: forall s s' qa ra qb rb σ w t,
         Smallstep.at_external (C se) s qb ->
         Smallstep.after_external (C se) s rb s' ->
         has (next σ w qa ra) t ->
         li_rel (qa, ra) (qb, rb) ->
-        step (st s σ) E0 (st s' (next σ w qa ra)).
+        step (st s σ) E0 (ext s' w (next σ w qa ra))
+    | step_after_external: forall s σ,
+        step (ext s nil σ) E0 (st s σ).
 
     Inductive initial_state: query liB -> state -> Prop :=
     | initial_state_intro: forall q s,
         Smallstep.initial_state (C se) q s ->
-        initial_state q (st s Σ).
-    (* We require Σ to account for all external calls of C *)
-    Inductive at_external: state -> query li_null -> Prop := .
-    Inductive after_external: state -> reply li_null -> state -> Prop := .
-    
+        initial_state q (st s (Σ se)).
+
+    Inductive at_external: state -> query liA -> Prop :=
+    | ext_at_external: forall s q r t σ,
+        at_external (ext s ((q, r) :: t) σ) q.
+    Inductive after_external: state -> reply liA -> state -> Prop :=
+    | ext_after_external: forall s q r t σ,
+        after_external (ext s ((q, r) :: t) σ) r (ext s t σ).
+
     Inductive final_state: state -> reply liB -> Prop :=
     | final_state_intro: forall s r σ,
         Smallstep.final_state (C se) s r ->
         final_state (st s σ) r.
 
-    Definition lts : lts li_null liB state :=
+    Definition lts : lts liA liB state :=
       {|
       Smallstep.step _ := step;
       Smallstep.valid_query := Smallstep.valid_query (C se);
@@ -137,44 +132,54 @@ Module Abs.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End ABS_SEMANTICS.
-  Definition semantics {liA liB: language_interface} skel li_rel (Σ: !liA --o !liA) (C: Smallstep.semantics liB liB) :=
+  Definition semantics {liA liB: language_interface} skel li_rel (Σ: Genv.symtbl -> !liA --o !liA) (C: Smallstep.semantics liB liB) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts Σ C li_rel se;
     |}.
-  Definition c_semantics (Σ: !li_d --o !li_d) (p: Clight.program): Smallstep.semantics li_null li_c :=
-    semantics (AST.erase_program p) li_rel Σ (semantics1 p).
+  Definition c_semantics (C: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) : Smallstep.semantics li_d li_c :=
+    semantics (AST.erase_program C) li_rel Σ (semantics1 C).
 End Abs.
 
 Module Impl.
   Section IMPL_SEMANTICS.
-    Context {liA: language_interface} (σ: !liA --o liA) (C: Smallstep.semantics liA liA).
+    Context {liA liB: language_interface} (σ: Genv.symtbl -> !liB --o liA) (C: semantics liA liA).
     Variable se: Genv.symtbl.
 
-    Notation state := (Smallstep.state C).
-    
+    Variant state :=
+    | st (s: Smallstep.state C)
+    | ext (s: Smallstep.state C) (t: list (token liB)).
+
     Inductive step: state -> trace -> state -> Prop :=
     | step_internal: forall s s' t,
         Step (C se) s t s' ->
-        step s t s'
-    | step_external: forall s s' q r t,
+        step (st s) t (st s')
+    | step_at_external: forall s s' q r t,
         Smallstep.at_external (C se) s q ->
         Smallstep.after_external (C se) s r s' ->
-        has σ (t, (q, r)) ->
-        step s E0 s'.
+        has (σ se) (t, (q, r)) ->
+        step (st s) E0 (ext s' t)
+    | step_after_external: forall s,
+        step (ext s nil) E0 (st s).
+
     Inductive initial_state: query liA -> state -> Prop :=
     | initial_state_intro: forall q s,
         Smallstep.initial_state (C se) q s ->
-        initial_state q s.
-    Inductive at_external: state -> query li_null -> Prop := .
-    Inductive after_external: state -> reply li_null -> state -> Prop := .
-    
+        initial_state q (st s).
+
+    Inductive at_external: state -> query liB -> Prop :=
+    | ext_at_external: forall s q r t,
+        at_external (ext s ((q, r) :: t)) q.
+    Inductive after_external: state -> reply liB -> state -> Prop :=
+    | ext_after_external: forall s q r t,
+        after_external (ext s ((q, r) :: t)) r (ext s t).
+
     Inductive final_state: state -> reply liA -> Prop :=
     | final_state_intro: forall s r,
         Smallstep.final_state (C se) s r ->
-        final_state s r.
+        final_state (st s) r.
 
-    Definition lts : lts li_null liA state :=
+    Definition lts : lts liB liA state :=
       {|
       Smallstep.step _ := step;
       Smallstep.valid_query := Smallstep.valid_query (C se);
@@ -185,13 +190,13 @@ Module Impl.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End IMPL_SEMANTICS.
-  Definition semantics {liA: language_interface} skel (σ: !liA --o liA) (C: Smallstep.semantics liA liA) :=
+  Definition semantics {liA liB: language_interface} skel (σ: Genv.symtbl -> !liB --o liA) (C: Smallstep.semantics liA liA) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts σ C se;
     |}.
-  Definition c_semantics (σ: !li_c --o li_c) (p: Clight.program): Smallstep.semantics li_null li_c :=
-    semantics (AST.erase_program p) σ (semantics1 p).
+  Definition c_semantics (C: Clight.program) (p: Clight.program): Smallstep.semantics li_d li_c :=
+    semantics (AST.erase_program C) (fun se => clight_bigstep p se @ !li_dc) (semantics1 C).
 End Impl.
 
 Section CORRECT.
@@ -214,45 +219,35 @@ Section CORRECT.
 
   Record correctness :=
     {
-      (* rel : the relation that relates specifications and the memory *)
-      rel :> token spec_space -> mem -> Prop;
-      (* the condition that the memory has to satisfy *)
-      init_mem : mem -> Prop;
-      mem_scope : forall m m' t, Mem.unchanged_on (module_var (Clight.globalenv se p)) m m' -> rel t m -> rel t m';
-      simulation:
-        forall s dq dr t m,
-          rel (s, (dq, dr)::t) m ->
-          exists u v cr cq m',
-            s = u ++ v /\
-            (* Clight implementation simulates deepsea event e *)
-            q_rel dq cq m /\
-            has d_p (u, (cq, cr)) /\
-            r_rel dr cr m' /\
-            Mem.unchanged_on (non_module_var (Clight.globalenv se p)) m m' /\
-            (* behavior of the remaning trace *)
-            rel (v, t) m';
-      correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
+    (* rel : the relation that relates specifications and the memory *)
+    rel :> token spec_space -> mem -> Prop;
+    (* the condition that the memory has to satisfy *)
+    init_mem : mem -> Prop;
+    mem_scope : forall m m' t, Mem.unchanged_on (module_var (Clight.globalenv se p)) m m' -> rel t m -> rel t m';
+    simulation:
+      forall s dq dr t m,
+        rel (s, (dq, dr)::t) m ->
+        exists u v cr cq m',
+          s = u ++ v /\
+          (* Clight implementation simulates deepsea event e *)
+          q_rel dq cq m /\
+          has d_p (u, (cq, cr)) /\
+          r_rel dr cr m' /\
+          Mem.unchanged_on (non_module_var (Clight.globalenv se p)) m m' /\
+          (* behavior of the remaning trace *)
+          rel (v, t) m';
+    correct_cond: forall m t, has spec t -> init_mem m -> rel t m;
     }.
 End CORRECT.
 
-
 Section SIM.
-  Context {p: Clight.program} {se: Genv.symtbl} {Σ: !li_d --o !li_d} (correct: correctness p se Σ).
+  Context {p: Clight.program} {se: Genv.symtbl} {Σ: Genv.symtbl -> !li_d --o !li_d}
+          (correct: correctness p se (Σ se)).
   Variable C: Clight.program.
-  Definition sem_abs: semantics li_null li_c := Abs.c_semantics Σ C.
-  Definition sem_impl: semantics li_null li_c := Impl.c_semantics (clight_bigstep p se) C.
-  Notation st := (Abs.st (semantics1 C)).
-  Definition mem_from_state (s: Clight.state): mem :=
-    match s with
-    | State _ _ _ _ _ m => m
-    | Callstate _ _ _ m => m
-    | Returnstate _ _ m => m
-    end.
-  Inductive state_match R w: state sem_abs -> state sem_impl -> Prop :=
-    ms_intro s1 s2 σ:
-      Clightrel.state_match R w s1 s2 ->
-      (forall t, has σ t -> correct t (mem_from_state s2)) ->
-      state_match R w (st s1 σ) s2.
+  Definition sem_abs: semantics li_d li_c := Abs.c_semantics C Σ.
+  Definition sem_impl: semantics li_d li_c := Impl.c_semantics C p.
+
+  Inductive state_match: Smallstep.state sem_abs -> Smallstep.state sem_impl -> Prop := .
 
   Variable R: cklr.             (* this will be instantiated to the cklr defined below *)
   Theorem fsim_abs_impl:
@@ -260,20 +255,41 @@ Section SIM.
   Admitted.
 End SIM.
 
-Section ABS_CKLR.
+Require Import Extends.
 
+Section ABS_CKLR.
+  (* the local variables that belong to the component being verified *)
   Variable locals: (block -> Z -> Prop).
   Inductive abs_world :=
     absw (m: mem).
   Inductive abs_acc: relation abs_world :=
     acc_intro m1 m2:
-      Mem.unchanged_on locals m1 m2 ->
+      (* External call into the component only touches its own variables  *)
+      Mem.unchanged_on (fun b ofs => ~ locals b ofs) m1 m2 ->
       abs_acc (absw m1) (absw m2).
 
   Inductive abs_mm: abs_world -> mem -> mem -> Prop :=
-    match_intro m1 m2:
+    match_intro: forall m m1 m2,
+      (* source memory extends into target memory *)
       Mem.extends m1 m2 ->
-      abs_mm (absw m2) m1 m2.
+      (* local variables of the component are only modified during external
+         calls so they don't change in the course of internal steps*)
+      Mem.unchanged_on locals m m2 ->
+      abs_mm (absw m) m1 m2.
+
+  Instance abs_acc_preo:
+    PreOrder abs_acc.
+  Proof.
+    split.
+    - intros [m]. constructor.
+      apply Mem.unchanged_on_refl.
+    - intros [m1] [m2] [m3].
+      inversion 1. subst.
+      inversion 1. subst.
+      constructor.
+      eapply Mem.unchanged_on_trans; eauto.
+  Qed.
+
   Program Definition abs: cklr :=
     {|
     world := abs_world;
@@ -282,5 +298,41 @@ Section ABS_CKLR.
     match_mem w := abs_mm w;
     match_stbls w := eq;
     |}.
-  
+
+  Next Obligation.
+    repeat rstep. apply inject_incr_refl.
+  Qed.
+
+  Next Obligation.
+    rauto.
+  Qed.
+
+  Next Obligation.
+    intros [m] ? ? ->. apply Genv.match_stbls_id.
+  Qed.
+
+  Next Obligation.
+    intros w ? ? m1 m2 <- Hm. inv Hm.
+    erewrite -> Mem.mext_next; eauto.
+  Qed.
+  (* cklr_alloc *)
+  Next Obligation.
+    intros [m] m1 m2 Hm lo hi. inv Hm.
+    destruct (Mem.alloc m1 lo hi) as [m1' b1] eqn: Hm1.
+    edestruct Mem.alloc_extends as (m2' & Hm2' & Hm'); eauto; try reflexivity.
+    rewrite Hm2'.
+    exists (absw m); split; repeat rstep.
+    constructor; auto.
+    eapply Mem.unchanged_on_trans; eauto.
+    eapply Mem.alloc_unchanged_on; eauto.
+    constructor.
+  Qed.
+  (* cklr_free *)
+  Next Obligation.
+    intros [m] m1 m2 Hm [[b lo] hi] r2 Hr.
+    apply coreflexivity in Hr.
+    destruct (Mem.free m1 b lo (lo+sz)) as [m1' | ] eqn: Hm1'; [ | constructor].
+    edestruct Mem.free_parallel_extends as (m2' & Hm2' & Hm'); eauto.
+    rewrite Hm2'.
+
 End ABS_CKLR.
