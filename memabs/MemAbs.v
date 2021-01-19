@@ -257,32 +257,37 @@ End SIM.
 
 Require Import Extends.
 
-Section ABS_CKLR.
-  (* the local variables that belong to the component being verified *)
-  Variable locals: (block -> Z -> Prop).
-  Inductive abs_world :=
-    absw (m: mem).
-  Inductive abs_acc: relation abs_world :=
-    acc_intro m1 m2:
+Section SEP_CKLR.
+  (* the target memory and local variables that belong to the component
+     constitute the klr index *)
+  Inductive sep_world :=
+    sepw (m: mem) (vars: block -> Z -> Prop) (Hm: forall b ofs, vars b ofs -> Mem.valid_block m b).
+  Inductive sep_acc: relation sep_world :=
+    acc_intro m1 m2 vars1 vars2 Hm1 Hm2:
       (* External call into the component only touches its own variables  *)
-      Mem.unchanged_on (fun b ofs => ~ locals b ofs) m1 m2 ->
-      abs_acc (absw m1) (absw m2).
+      Mem.unchanged_on (fun b ofs => ~ vars1 b ofs) m1 m2 ->
+      (* and it may allocate new variables during the external call *)
+      subrel vars1 vars2 ->
+      sep_acc (sepw m1 vars1 Hm1) (sepw m2 vars2 Hm2).
 
-  Inductive abs_mm: abs_world -> mem -> mem -> Prop :=
-    match_intro: forall m m1 m2,
+  Inductive sep_mm: sep_world -> mem -> mem -> Prop :=
+    match_intro: forall m m1 m2 vars Hm,
       (* source memory extends into target memory *)
       Mem.extends m1 m2 ->
       (* local variables of the component are only modified during external
          calls so they don't change in the course of internal steps*)
-      Mem.unchanged_on locals m m2 ->
-      abs_mm (absw m) m1 m2.
+      Mem.unchanged_on vars m m2 ->
+      (* m1 and locals don't have blocks in common *)
+      (forall b ofs, vars b ofs -> ~ Mem.perm m1 b ofs Max Nonempty) ->
+      sep_mm (sepw m vars Hm) m1 m2.
 
-  Instance abs_acc_preo:
-    PreOrder abs_acc.
+  Instance sep_acc_preo:
+    PreOrder sep_acc.
   Proof.
     split.
     - intros [m]. constructor.
       apply Mem.unchanged_on_refl.
+      rauto.
     - intros [m1] [m2] [m3].
       inversion 1. subst.
       inversion 1. subst.
@@ -290,12 +295,12 @@ Section ABS_CKLR.
       eapply Mem.unchanged_on_trans; eauto.
   Qed.
 
-  Program Definition abs: cklr :=
+  Program Definition sep: cklr :=
     {|
-    world := abs_world;
-    wacc := abs_acc;
+    world := sep_world;
+    wacc := sep_acc;
     mi w := inject_id;
-    match_mem w := abs_mm w;
+    match_mem w := sep_mm w;
     match_stbls w := eq;
     |}.
 
@@ -325,14 +330,24 @@ Section ABS_CKLR.
     constructor; auto.
     eapply Mem.unchanged_on_trans; eauto.
     eapply Mem.alloc_unchanged_on; eauto.
-    constructor.
+    intros. eapply H2 in H. intros Hp. apply H.
+    eapply Mem.perm_alloc_4 in Hp; eauto.
+    SearchAbout Mem.alloc Mem.nextblock.
+    eapply Mem.alloc_result in Hm1. subst.
+    SearchAbout Mem.valid_block Mem.perm.
+    eapply Mem.perm_valid_block in H.
   Qed.
   (* cklr_free *)
   Next Obligation.
-    intros [m] m1 m2 Hm [[b lo] hi] r2 Hr.
-    apply coreflexivity in Hr.
-    destruct (Mem.free m1 b lo (lo+sz)) as [m1' | ] eqn: Hm1'; [ | constructor].
+    intros [m] m1 m2 Hm [[b lo] hi] r2 Hr. inv Hm.
+    apply coreflexivity in Hr. subst. simpl. red.
+    destruct (Mem.free m1 b lo hi) as [m1' | ] eqn: Hm1'; [ | constructor].
     edestruct Mem.free_parallel_extends as (m2' & Hm2' & Hm'); eauto.
-    rewrite Hm2'.
+    rewrite Hm2'. constructor.
+    exists (absw m); split; repeat rstep.
+    constructor; auto.
+    eapply Mem.unchanged_on_trans; eauto.
+    eapply Mem.free_unchanged_on; eauto.
+    SearchAbout Mem.unchanged_on Mem.free.
 
 End ABS_CKLR.
