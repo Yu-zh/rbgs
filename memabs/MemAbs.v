@@ -258,20 +258,20 @@ End SIM.
 Require Import Extends.
 
 Section SEP_CKLR.
+
+  Variable vars: block -> Z -> Prop.
   (* the target memory and local variables that belong to the component
      constitute the klr index *)
   Inductive sep_world :=
-    sepw (m: mem) (vars: block -> Z -> Prop) (Hm: forall b ofs, vars b ofs -> Mem.valid_block m b).
+    sepw (m: mem) (Hvb: forall b ofs, vars b ofs -> Mem.valid_block m b).
   Inductive sep_acc: relation sep_world :=
-    acc_intro m1 m2 vars1 vars2 Hm1 Hm2:
+    acc_intro m1 m2 Hm1 Hm2:
       (* External call into the component only touches its own variables  *)
-      Mem.unchanged_on (fun b ofs => ~ vars1 b ofs) m1 m2 ->
-      (* and it may allocate new variables during the external call *)
-      subrel vars1 vars2 ->
-      sep_acc (sepw m1 vars1 Hm1) (sepw m2 vars2 Hm2).
+      Mem.unchanged_on (fun b ofs => ~ vars b ofs) m1 m2 ->
+      sep_acc (sepw m1 Hm1) (sepw m2 Hm2).
 
   Inductive sep_mm: sep_world -> mem -> mem -> Prop :=
-    match_intro: forall m m1 m2 vars Hm,
+    match_intro: forall m m1 m2 Hvb,
       (* source memory extends into target memory *)
       Mem.extends m1 m2 ->
       (* local variables of the component are only modified during external
@@ -279,7 +279,7 @@ Section SEP_CKLR.
       Mem.unchanged_on vars m m2 ->
       (* m1 and locals don't have blocks in common *)
       (forall b ofs, vars b ofs -> ~ Mem.perm m1 b ofs Max Nonempty) ->
-      sep_mm (sepw m vars Hm) m1 m2.
+      sep_mm (sepw m Hvb) m1 m2.
 
   Instance sep_acc_preo:
     PreOrder sep_acc.
@@ -287,7 +287,6 @@ Section SEP_CKLR.
     split.
     - intros [m]. constructor.
       apply Mem.unchanged_on_refl.
-      rauto.
     - intros [m1] [m2] [m3].
       inversion 1. subst.
       inversion 1. subst.
@@ -322,20 +321,20 @@ Section SEP_CKLR.
   Qed.
   (* cklr_alloc *)
   Next Obligation.
-    intros [m] m1 m2 Hm lo hi. inv Hm.
+    intros [m Hvb] m1 m2 Hm lo hi. inv Hm.
     destruct (Mem.alloc m1 lo hi) as [m1' b1] eqn: Hm1.
     edestruct Mem.alloc_extends as (m2' & Hm2' & Hm'); eauto; try reflexivity.
     rewrite Hm2'.
-    exists (absw m); split; repeat rstep.
+    eexists (sepw m _); split; repeat rstep.
     constructor; auto.
     eapply Mem.unchanged_on_trans; eauto.
     eapply Mem.alloc_unchanged_on; eauto.
-    intros. eapply H2 in H. intros Hp. apply H.
+    intros. specialize (Hvb _ _ H).
+    specialize (H2 _ _ H). intros Hp. apply H2.
     eapply Mem.perm_alloc_4 in Hp; eauto.
-    SearchAbout Mem.alloc Mem.nextblock.
     eapply Mem.alloc_result in Hm1. subst.
-    SearchAbout Mem.valid_block Mem.perm.
-    eapply Mem.perm_valid_block in H.
+    exploit Mem.valid_block_unchanged_on; eauto.
+    erewrite Mem.mext_next; eauto.
   Qed.
   (* cklr_free *)
   Next Obligation.
