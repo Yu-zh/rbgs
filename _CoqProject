@@ -21,3 +21,4 @@ models/IntSpec.v
 models/Coherence.v
 examples/CAL.v
 examples/CompCertSem.v
+memabs/SepCKLR.v
