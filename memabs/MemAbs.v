@@ -462,8 +462,22 @@ Section SIM.
   Instance sepv_frame: KripkeFrame unit (sepc_world p se).
   Proof. exact (cklr_kf sepv). Qed.
 
+  Inductive cc_query: (world sepv) -> query li_c -> query li_c -> Prop :=
+  | cc_query_intro: forall w q1 q2,
+      match_query (cc_c sepv) w q1 q2 ->
+      (init_mem _ _  ps) (cq_mem q2) ->
+      cc_query w q1 q2.
+
+  Program Definition sepcc :=
+    {|
+    ccworld := ccworld (cc_c sepv);
+    match_senv := match_senv (cc_c sepv);
+    match_query := cc_query;
+    match_reply := match_reply (cc_c sepv);
+    |}.
+
   Theorem fsim_abs_impl:
-    forward_simulation cc_id (cc_c sepv) sem_abs sem_impl.
+    forward_simulation cc_id sepcc sem_abs sem_impl.
   Proof.
     pose proof (semantics1_rel C sepv) as [[ind ord match_st _ H _]].
     constructor. econstructor; eauto. instantiate (1 := fun _ _ _ => _). cbn beta.
@@ -474,11 +488,11 @@ Section SIM.
     specialize (H se1 se2 w Hse HseC).
     destruct Hse as [<- <-].
     apply forward_simulation_step with (match_states := (state_match (match_st se se w))).
-    - intros. exploit @fsim_match_valid_query; eauto.
-    - cbn. intros q1 q2 s1 Hq Hs1. cbn in Hs1. inv Hs1.
+    - intros q1 q2 Hq. inv Hq. exploit @fsim_match_valid_query; eauto.
+    - cbn. intros q1 q2 s1 Hq Hs1. cbn in Hs1. inv Hs1. inv Hq.
       edestruct @fsim_match_initial_states as (i & s2 & Hiq & Hs); eauto.
       exists(st2 s2). split. constructor. auto.
-      eapply st_match. apply Hs. eapply correct_cond. auto. admit.
+      eapply st_match. apply Hs. eapply correct_cond. auto. inv Hiq. apply H2.
     - admit.
     - admit.
     - intros s1 t s1' Hstep s2 Hs. inversion Hstep.
