@@ -79,15 +79,15 @@ Qed.
 
 Module Abs.
   Section ABS_SEMANTICS.
-    (* the linked system has type liA ->> liB *)
-    Context {liA liB: language_interface} (Σ: Genv.symtbl -> !liA --o !liA) (C: semantics liB liB).
-    Variable li_rel: (query liA * reply liA) -> (query liB * reply liB) -> Prop.
+    (* the linked system has type liA ->> liD *)
+    Context {liA liB liC liD: language_interface} (Σ: Genv.symtbl -> !liA --o !liB) (C: semantics liC liD).
+    Variable li_rel: (query liB * reply liB) -> (query liC * reply liC) -> Prop.
     Variable se: Genv.symtbl.
 
     Variant state : Type :=
-    | st (s: Smallstep.state C) (σ: !liA --o !liA)
+    | st (s: Smallstep.state C) (σ: !liA --o !liB)
     (* s and σ constitute the state after the external call *)
-    | ext (s: Smallstep.state C) (t: list (token liA)) (σ: !liA --o !liA).
+    | ext (s: Smallstep.state C) (t: list (token liA)) (σ: !liA --o !liB).
 
     Inductive step: state -> trace -> state -> Prop :=
     | step_internal: forall s s' t σ,
@@ -109,7 +109,7 @@ Module Abs.
     | step_after_external: forall s σ,
         step (ext s nil σ) E0 (st s σ).
 
-    Inductive initial_state: query liB -> state -> Prop :=
+    Inductive initial_state: query liD -> state -> Prop :=
     | initial_state_intro: forall q s,
         Smallstep.initial_state (C se) q s ->
         initial_state q (st s (Σ se)).
@@ -121,12 +121,12 @@ Module Abs.
     | ext_after_external: forall s q r t σ,
         after_external (ext s ((q, r) :: t) σ) r (ext s t σ).
 
-    Inductive final_state: state -> reply liB -> Prop :=
+    Inductive final_state: state -> reply liD -> Prop :=
     | final_state_intro: forall s r σ,
         Smallstep.final_state (C se) s r ->
         final_state (st s σ) r.
 
-    Definition lts : lts liA liB state :=
+    Definition lts : lts liA liD state :=
       {|
       Smallstep.step _ := step;
       Smallstep.valid_query := Smallstep.valid_query (C se);
@@ -137,7 +137,8 @@ Module Abs.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End ABS_SEMANTICS.
-  Definition semantics {liA liB: language_interface} skel li_rel (Σ: Genv.symtbl -> !liA --o !liA) (C: Smallstep.semantics liB liB) :=
+  Definition semantics {liA liB liC liD: language_interface}
+             skel li_rel (Σ: Genv.symtbl -> !liA --o !liB) (C: Smallstep.semantics liC liD) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts Σ C li_rel se;
@@ -148,7 +149,7 @@ End Abs.
 
 Module Impl.
   Section IMPL_SEMANTICS.
-    Context {liA liB: language_interface} (σ: Genv.symtbl -> !liA --o liB) (C: semantics liB liB).
+    Context {liA liB liC: language_interface} (σ: Genv.symtbl -> !liA --o liB) (C: semantics liB liC).
     Variable se: Genv.symtbl.
 
     Variant state :=
@@ -167,7 +168,7 @@ Module Impl.
     | step_after_external: forall s,
         step (ext s nil) E0 (st s).
 
-    Inductive initial_state: query liB -> state -> Prop :=
+    Inductive initial_state: query liC -> state -> Prop :=
     | initial_state_intro: forall q s,
         Smallstep.initial_state (C se) q s ->
         initial_state q (st s).
@@ -179,12 +180,12 @@ Module Impl.
     | ext_after_external: forall s q r t,
         after_external (ext s ((q, r) :: t)) r (ext s t).
 
-    Inductive final_state: state -> reply liB -> Prop :=
+    Inductive final_state: state -> reply liC -> Prop :=
     | final_state_intro: forall s r,
         Smallstep.final_state (C se) s r ->
         final_state (st s) r.
 
-    Definition lts : lts liA liB state :=
+    Definition lts : lts liA liC state :=
       {|
       Smallstep.step _ := step;
       Smallstep.valid_query := Smallstep.valid_query (C se);
@@ -195,7 +196,8 @@ Module Impl.
       Smallstep.globalenv := Smallstep.globalenv (C se);
       |}.
   End IMPL_SEMANTICS.
-  Definition semantics {liA liB: language_interface} skel (σ: Genv.symtbl -> !liB --o liA) (C: Smallstep.semantics liA liA) :=
+  Definition semantics {liA liB liC: language_interface}
+             skel (σ: Genv.symtbl -> !liA --o liB) (C: Smallstep.semantics liB liC) :=
     {|
     Smallstep.skel := skel;
     Smallstep.activate se := lts σ C se;
@@ -439,22 +441,22 @@ Section SIM.
   Definition sem_impl: semantics li_d li_c := Impl.c_semantics sk C p.
 
   (* It's not possible to infer the outgoing interface so we define the following notations *)
-  Notation " 'st1' " := (@Abs.st li_d li_c (semantics1 C)) (at level 1) : sim_scope.
-  Notation " 'st2' " := (@Impl.st li_d li_c (semantics1 C)) (at level 1) : sim_scope.
-  Notation " 'ext1' " := (@Abs.ext li_d li_c (semantics1 C)) (at level 1) : sim_scope.
-  Notation " 'ext2' " := (@Impl.ext li_d li_c (semantics1 C)) (at level 1) : sim_scope.
-  Notation " 'state1' " := (@Abs.state li_d li_c (semantics1 C)) (at level 1) : sim_scope.
-  Notation " 'state2' " := (@Impl.state li_d li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'st1' " := (@Abs.st li_d li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'st2' " := (@Impl.st li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'ext1' " := (@Abs.ext li_d li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'ext2' " := (@Impl.ext li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'state1' " := (@Abs.state li_d li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
+  Notation " 'state2' " := (@Impl.state li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
   Open Scope sim_scope.
 
-  Inductive state_match {ind} (ms: ind -> state -> state -> Prop): state1 -> state2 -> Prop :=
+  Inductive state_match {ind} (ms: ind -> state -> state -> Prop): ind -> state1 -> state2 -> Prop :=
   | st_match: forall (s1 s2: state) σ1 i,
       ms i s1 s2 ->  ps σ1 (get_mem s2)->
-      state_match ms (st1 s1 σ1) (st2 s2)
+      state_match ms i (st1 s1 σ1) (st2 s2)
   | ext_match: forall (s1 s2: state) σ1 t1 t2 i,
       ms i s1 s2 -> t1 = t2 ->
       ps σ1 (get_mem s2)->
-      state_match ms (ext1 s1 t1 σ1) (ext2 s2 t2).
+      state_match ms i (ext1 s1 t1 σ1) (ext2 s2 t2).
 
   Variable se: Genv.symtbl.
   (* Let vars := module_var (Clight.globalenv se p). *)
@@ -487,17 +489,35 @@ Section SIM.
     eapply Genv.valid_for_linkorder in Hsep; eauto.
     specialize (H se1 se2 w Hse HseC).
     destruct Hse as [<- <-].
-    apply forward_simulation_step with (match_states := (state_match (match_st se se w))).
+    pose (ms := state_match (match_st se se w)).
+    (* instantiate (1 := ms). *)
+    eapply Build_fsim_properties with (match_states := ms) (order := ord).
     - intros q1 q2 Hq. inv Hq. exploit @fsim_match_valid_query; eauto.
     - cbn. intros q1 q2 s1 Hq Hs1. cbn in Hs1. inv Hs1. inv Hq.
       edestruct @fsim_match_initial_states as (i & s2 & Hiq & Hs); eauto.
-      exists(st2 s2). split. constructor. auto.
+      exists i, (st2 s2). split. constructor. auto.
       eapply st_match. apply Hs. eapply correct_cond. auto. inv Hiq. apply H2.
-    - admit.
-    - admit.
-    - intros s1 t s1' Hstep s2 Hs. inversion Hstep.
-      + admit.
-      + subst. cbn. inv Hs.
+    - intros wx s1 s2 r1 Hs Hfs. inv Hfs. inv Hs.
+      edestruct @fsim_match_final_states; eauto.
+      eexists. split. constructor. apply H1. apply H1.
+    - intros i s1 s2 q1 Hs Hae. inv Hae. inv Hs.
+      exists tt, q1. repeat apply conj; try constructor.
+      intros r1 r2 s1' Hr Hae. inv Hr. inv Hae.
+      exists i, (ext2 s0 t). split. constructor. econstructor; eauto.
+    - intros s1 t s1' Hstep i s2 Hs. inv Hstep.
+      + inv Hs.
+        edestruct @fsim_simulation as (i' & s2' & Hstep' & Hm); eauto.
+        eexists i', (st2 s2'). split.
+        * destruct Hstep'.
+          -- left. clear -H1. inv H1. econstructor; eauto. constructor. apply H.
+             clear -H0. induction H0. constructor.
+             econstructor; eauto. constructor. auto.
+          -- right. clear -H1. destruct H1. split; auto. clear H0.
+             induction H. constructor.
+             econstructor; eauto. constructor. auto.
+        * constructor. auto. eapply mem_scope; eauto.
+          admit. (* unfortunately we know nothing from match_st *)
+      + inv Hs.
         edestruct @fsim_match_external as (w' & qtgt & Hext & mq & msenv & fsim_match_after_ext); eauto.
         edestruct (simulation _ _ ps) as (rb' & qtgt' & m' & qrel & rrel & impl & mem_unchange & Hs'); eauto.
         assert (cc_c_reply sepv w' rb rb').
@@ -506,15 +526,12 @@ Section SIM.
           constructor.
           - inv H3. inv rrel.
             apply val_inject_refl.
-          - cbn. destruct w'. econstructor.
-            + admit.            (* memory extension might not hold after external calls *)
-            + admit.
-            + admit.
+          - cbn. destruct w'. admit. (* memory extension preserves *)
         }
-        edestruct fsim_match_after_ext as (i' & s2' & Haft & Hs2); eauto. exists w'. split. admit.
-        eauto.
-        exists(ext2 s2' w0). split.
-        * econstructor. apply Hext. apply Haft.
+        edestruct fsim_match_after_ext as (i' & s2' & Haft & Hs2); eauto. exists w'. split. rauto. eauto.
+        exists i', (ext2 s2' w0). split.
+        * left. apply plus_one.
+          econstructor. apply Hext. apply Haft.
           assert (qtgt = qtgt').
           {
             destruct qtgt as [vf0 sg0 args0 m0].
@@ -533,8 +550,39 @@ Section SIM.
           }
           rewrite <- H5. apply Hs'.
       + admit.
-          - admit.
+    - admit.
   Admitted.
-
   Close Scope sim_scope.
 End SIM.
+
+Module Comp.
+  Section UNSEM_COMP.
+    Context {liA liB liC : language_interface}.
+    Context (Σ1 : Genv.symtbl -> !liB --o liC) (Σ2 : Genv.symtbl -> !liA --o !liB).
+    Let Σ : Genv.symtbl -> !liA --o liC := fun se => (Σ1 se) @ (Σ2 se).
+    Variable sk : AST.program unit unit.
+    Variable vq : Genv.symtbl -> query liC -> bool.
+    Let L1 : semantics liA liC := UnSem.semantics sk Σ vq.
+    Let L2 : semantics liA liC := Abs.semantics sk eq Σ2 (UnSem.semantics sk Σ1 vq).
+
+    Notation " 'st' " := (@Abs.st liA liB liB liC (UnSem.semantics sk Σ1 vq)) (at level 1) : sim_scope.
+    Notation " 'ext' " := (@Abs.ext liA liB liB liC (UnSem.semantics sk Σ1 vq)) (at level 1) : sim_scope.
+    Notation " 'state' " := (@Abs.state liA liB liB liC (UnSem.semantics sk Σ1 vq)) (at level 1) : sim_scope.
+    Open Scope sim_scope.
+
+    (* The flag in L2 should always be true *)
+    Inductive state_match : nat -> Smallstep.state L1 -> state -> Prop :=
+    | match_st: forall b ts ts' σ,
+        (forall r tr tr', has )
+        has σ (ts, ts') ->
+        state_match (true, ts) (st (true, ts') σ)
+    | match_ext: forall b ts ts' σ t,
+        state_match (b, ts) (ext (true, ts') t σ).
+
+    Lemma fsim_unsem_comp:
+      forward_simulation 1 1 L1 L2.
+    Proof.
+      constructor.
+
+  End UNSEM_COMP.
+End Comp.
