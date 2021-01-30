@@ -213,6 +213,18 @@ Inductive module_var (ge: genv) : block -> Z -> Prop :=
     ty = gvar_info v ->
     module_var ge b (sizeof ge ty).
 
+Inductive q_rel': query li_d -> query li_c -> mem -> Prop:=
+| q_rel'_intro:
+    forall vf sg args args' m,
+      list_rel Val.lessdef args args' ->
+      q_rel' ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
+             ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args';cq_mem:=m|}) m.
+
+Definition r_with_mem (r: reply li_d) m: reply li_c :=
+  match r with
+    {|dr_retval:=ret|} => ({|cr_retval:=ret;cr_mem:=m|})
+  end.
+
 Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
   {
   mspec_rel :> (!li_d --o !li_d) -> mem -> Prop;
@@ -223,13 +235,16 @@ Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
       Mem.unchanged_on (module_var (Clight.globalenv se p)) m m' ->
       mspec_rel σ m ->
       mspec_rel σ m';
-  simulation: forall σ dq dr t m se,
+  simulation: forall σ dq dr t m se cq,
       Genv.valid_for (AST.erase_program p) se ->
       mspec_rel σ m -> exec σ dq t dr ->
-      exists cr cq m',
-        q_rel dq cq m /\ r_rel dr cr m' /\
-        has (clight_bigstep p se @ !li_dc) (t, (cq, cr)) /\
+      q_rel' dq cq m ->
+      exists m',
+        has (clight_bigstep p se @ !li_dc) (t, (cq, r_with_mem dr m')) /\
         Mem.unchanged_on (fun b ofs => ~ module_var (Clight.globalenv se p) b ofs) m m' /\
+        (* Mem.unchanged_on allowed non-local variables to grow and we forbid it
+        by adding constraints on Mem.nextblock *)
+        Mem.nextblock m = Mem.nextblock m' /\
         mspec_rel (next σ t dq dr) m';
   correct_cond: forall m se,
       Genv.valid_for (AST.erase_program p) se ->
@@ -246,50 +261,48 @@ Definition get_mem (s: state) : mem :=
 Section SepcCKLR.
   (* A CKLR dedicated to Clight programs *)
   Variable p: Clight.program.
-  Variable se: Genv.symtbl.
-  Let vars: block -> Z -> Prop := module_var (globalenv se p).
+  Let vars: Genv.symtbl -> block -> Z -> Prop := fun se => module_var (globalenv se p).
   (* the target memory and local variables that belong to the component
      constitute the klr index *)
   Inductive sepc_world :=
-    sepcw (m: mem) (Hvb: forall b ofs, vars b ofs -> Mem.valid_block m b).
+    sepcw (se: Genv.symtbl) (m: mem) (Hvb: forall b ofs, vars se b ofs -> Mem.valid_block m b).
   Inductive sepc_acc: relation sepc_world :=
-    acc_intro m1 m2 Hm1 Hm2:
-      (* External call into the component only touches its own variables  *)
-      Mem.unchanged_on (fun b ofs => ~ vars b ofs) m1 m2 ->
-      sepc_acc (sepcw m1 Hm1) (sepcw m2 Hm2).
+    acc_intro se m Hm1 Hm2:
+      sepc_acc (sepcw se m Hm1) (sepcw se m Hm2).
 
   Inductive sepc_mm: sepc_world -> mem -> mem -> Prop :=
-    match_intro: forall m m1 m2 Hvb,
+    match_intro: forall se m m1 m2 Hvb,
       (* source memory extends into target memory *)
       Mem.extends m1 m2 ->
       (* local variables of the component are only modified during external
          calls so they don't change in the course of internal steps*)
-      Mem.unchanged_on vars m m2 ->
+      Mem.unchanged_on (vars se) m m2 ->
       (* m1 and locals don't have blocks in common *)
-      (forall b ofs, vars b ofs -> ~ Mem.perm m1 b ofs Max Nonempty) ->
-      sepc_mm (sepcw m Hvb) m1 m2.
+      (forall b ofs, vars se b ofs -> ~ Mem.perm m1 b ofs Max Nonempty) ->
+      sepc_mm (sepcw se m Hvb) m1 m2.
 
   Instance sepc_acc_preo:
     PreOrder sepc_acc.
   Proof.
     split.
     - intros [m]. constructor.
-      apply Mem.unchanged_on_refl.
     - intros [m1] [m2] [m3].
       inversion 1. subst.
       inversion 1. subst.
       constructor.
-      eapply Mem.unchanged_on_trans; eauto.
   Qed.
+  Inductive sepc_stbls: sepc_world -> Genv.symtbl -> Genv.symtbl -> Prop :=
+    sepc_stbls_intro: forall se m Hm,
+      sepc_stbls (sepcw se m Hm) se se.
 
   Program Definition sepc: cklr :=
     {|
     world := sepc_world;
     wacc := sepc_acc;
     mi w := inject_id;
-    match_mem w := sepc_mm w;
+    match_mem := sepc_mm;
     (* a cheap workaround *)
-    match_stbls w se1 se2 := se1 = se2 /\ se = se1;
+    match_stbls := sepc_stbls;
     |}.
 
   (* mi_acc *)
@@ -298,14 +311,15 @@ Section SepcCKLR.
   Qed.
   (* match_stbls_acc *)
   Next Obligation.
-    rauto.
+    repeat rstep. inv H. intros ? ? ?. inv H. constructor.
   Qed.
   (* match_stbls_proj *)
   Next Obligation.
-    intros se1 se2 [<- <-]. apply Genv.match_stbls_id.
+    intros se1 se2 Hse. inv Hse. apply Genv.match_stbls_id.
   Qed.
   (* match_stbls_nextblock *)
   Next Obligation.
+    inv H.
     erewrite <- Mem.mext_next; eauto.
     inv H0. auto.
   Qed.
@@ -315,12 +329,12 @@ Section SepcCKLR.
     destruct (Mem.alloc m1 lo hi) as [m1' b1] eqn: Hm1.
     edestruct Mem.alloc_extends as (m2' & Hm2' & Hm'); eauto; try reflexivity.
     rewrite Hm2'.
-    eexists (sepcw m _); split; repeat rstep.
+    eexists (sepcw _ m _); split; repeat rstep.
     constructor; auto.
     - eapply Mem.unchanged_on_trans; eauto.
       eapply Mem.alloc_unchanged_on; eauto.
     - intros. specialize (Hvb _ _ H).
-      specialize (H2 _ _ H). intros Hp. apply H2.
+      specialize (H5 _ _ H). intros Hp. apply H5.
       eapply Mem.perm_alloc_4 in Hp; eauto.
       eapply Mem.alloc_result in Hm1. subst.
       exploit Mem.valid_block_unchanged_on; eauto.
@@ -333,16 +347,16 @@ Section SepcCKLR.
     destruct (Mem.free m1 b lo hi) as [m1'|] eqn:Hm1'; [|constructor].
     edestruct Mem.free_parallel_extends as (m2' & Hm2' & Hm'); eauto.
     rewrite Hm2'. constructor.
-    eexists (sepcw m _); split; repeat rstep.
+    eexists (sepcw _ m _); split; repeat rstep.
     constructor; auto.
     - eapply Mem.unchanged_on_trans; eauto.
       eapply Mem.free_unchanged_on; eauto.
-      intros ofs Hofs Hv. specialize (H2 _ _ Hv). apply H2.
+      intros ofs Hofs Hv. specialize (H5 _ _ Hv). apply H5.
       exploit Mem.free_range_perm. apply Hm1'. eauto.
       intros Hp. eapply Mem.perm_cur_max.
       eapply Mem.perm_implies. apply Hp. constructor.
-    - intros. specialize (H2 _ _ H).
-      intros Hp. apply H2.
+    - intros. specialize (H5 _ _ H).
+      intros Hp. apply H5.
       eapply Mem.perm_free_3; eauto.
   Qed.
   Require Import Extends.
@@ -362,16 +376,16 @@ Section SepcCKLR.
     apply val_inject_lessdef in Hv.
     edestruct Mem.store_within_extends as (m2' & Hm2' & Hm'); eauto.
     rewrite Hm2'. constructor.
-    eexists (sepcw m _); split; repeat rstep.
+    eexists (sepcw _ m _); split; repeat rstep.
     constructor; auto.
     - eapply Mem.unchanged_on_trans; eauto.
       eapply Mem.store_unchanged_on; eauto.
-      intros ofs' Hofs. intros Hp. specialize (H2 _ _ Hp). apply H2.
+      intros ofs' Hofs. intros Hp. specialize (H5 _ _ Hp). apply H5.
       exploit Mem.store_valid_access_3. apply Hm1'.
       unfold Mem.valid_access. intros [Hpr ?]. specialize (Hpr _ Hofs).
       eapply Mem.perm_cur_max. eapply Mem.perm_implies. apply Hpr. constructor.
-    - intros. specialize (H2 _ _ H).
-      intros Hp. apply H2.
+    - intros. specialize (H5 _ _ H).
+      intros Hp. apply H5.
       eapply Mem.perm_store_2; eauto.
   Qed.
   (* cklr_loadbytes *)
@@ -390,16 +404,16 @@ Section SepcCKLR.
     edestruct Mem.storebytes_within_extends as (m2' & Hm2' & Hm'); eauto.
     eapply list_rel_forall2. apply Hv.
     rewrite Hm2'. constructor.
-    eexists (sepcw m _); split; repeat rstep.
+    eexists (sepcw _ m _); split; repeat rstep.
     constructor; auto.
     - eapply Mem.unchanged_on_trans; eauto.
       eapply Mem.storebytes_unchanged_on; eauto.
-      intros ofs' Hofs. intros Hp. specialize (H2 _ _ Hp). apply H2.
+      intros ofs' Hofs. intros Hp. specialize (H5 _ _ Hp). apply H5.
       exploit Mem.storebytes_range_perm. apply Hm1'.
       rewrite length_rel; eauto. intros.
       eapply Mem.perm_cur_max. eapply Mem.perm_implies; eauto. constructor.
-    - intros. specialize (H2 _ _ H).
-      intros Hp. apply H2.
+    - intros. specialize (H5 _ _ H).
+      intros Hp. apply H5.
       eapply Mem.perm_storebytes_2; eauto.
   Qed.
   (* cklr_perm *)
@@ -433,6 +447,116 @@ Section SepcCKLR.
   Qed.
 End SepcCKLR.
 
+Lemma perm_imp m b ofs k p:
+  Mem.perm m b ofs k p ->
+  Mem.perm m b ofs Max Nonempty.
+Proof.
+  intros Hp.
+  destruct k.
+  - eapply Mem.perm_implies; eauto. constructor.
+  - eapply Mem.perm_cur_max. eapply Mem.perm_implies; eauto. constructor.
+Qed.
+
+Hypothesis module_var_dec: forall se p b ofs,
+    {module_var (globalenv se p) b ofs} + {~module_var (globalenv se p) b ofs}.
+
+Lemma mem_match_sim p m1 m2 m2' mx se Hvbx Hvb:
+  Mem.unchanged_on (fun (b : block) (ofs : Z) => ~ module_var (globalenv se p) b ofs) m2 m2' ->
+  Mem.nextblock m2 = Mem.nextblock m2' ->
+  sepc_mm p (sepcw p se mx Hvbx) m1 m2 ->
+  sepc_mm p (sepcw p se m2' Hvb) m1 m2'.
+Proof.
+  intros H Hnext Hm. inversion Hm as [? ? ? ? ? Hext Hinv Hx]. subst. clear Hm.
+  constructor.
+  - constructor.
+    (* nextblock m1 = nextblock m2' *)
+    + destruct Hext. congruence.
+    (* memory injection *)
+    + constructor.
+      * inversion 1. subst. intros Hp.
+        exploit Mem.mi_perm. apply Mem.mext_inj; apply Hext. eauto. eauto.
+        replace (ofs + 0) with ofs in * by omega. intros Hp'.
+        destruct (module_var_dec se p b2 ofs) as [Hmv | Hmv].
+        (* zero permission blocks inject into any block *)
+        -- eapply Hx in Hmv. exfalso. apply Hmv.
+           eapply perm_imp. eauto.
+        (* unchanged vars perserve injections *)
+        -- rewrite <- Mem.unchanged_on_perm. apply Hp'. apply H. apply Hmv.
+           eapply Mem.perm_valid_block. eauto.
+      * inversion 1. subst. intros.
+        exploit Mem.mi_align; eauto. apply Hext.
+      * inversion 1. subst. intros Hp.
+        exploit Mem.mi_memval; [ apply Hext | eauto | eauto | ]. intros Hv.
+        replace (ofs + 0) with ofs in * by omega.
+        destruct (module_var_dec se p b2 ofs) as [Hmv | Hmv].
+        -- eapply Hx in Hmv. exfalso.
+           apply Hmv. eapply perm_imp. eauto.
+        -- exploit Mem.unchanged_on_contents. apply H. apply Hmv.
+           exploit Mem.mi_perm; [ apply Hext | eauto | eauto | ].
+           replace (ofs + 0) with ofs in * by omega. auto.
+           intros ->. auto.
+    (* permission *)
+    + intros b ofs k perm Hp.
+      destruct (module_var_dec se p b ofs) as [Hmv | Hmv].
+      * right. apply Hx. auto.
+      * exploit Mem.unchanged_on_perm. apply H. apply Hmv.
+        unfold Mem.valid_block. rewrite Hnext.
+        eapply Mem.perm_valid_block. apply Hp.
+        intros Hp'. rewrite <- Hp' in Hp.
+        eapply Mem.mext_perm_inv; eauto.
+  - eapply Mem.unchanged_on_refl.
+  - auto.
+Qed.
+
+Lemma list_inj f xs ys:
+  list_rel (Val.inject f) xs ys ->
+  Val.inject_list f xs ys.
+Proof.
+  induction 1; try constructor; auto.
+Qed.
+
+Lemma sepc_cont_match_le p w w' k1 k2:
+  cont_match (sepc p) w k1 k2 ->
+  cont_match (sepc p) w' k1 k2.
+Proof.
+  induction 1; try constructor; auto.
+Qed.
+
+Lemma state_match_mem_unchanged p se m Hvb s1 s2:
+  state_match (sepc p) (sepcw p se m Hvb) s1 s2 ->
+  Mem.unchanged_on (module_var (globalenv se p)) m (get_mem s2).
+Proof.
+  inversion 1; subst; cbn in *.
+  - inv H3. auto.
+  - inv H3. auto.
+  - inv H2. auto.
+Qed.
+
+Lemma state_match_mem_nextblock p w s1 s2:
+  state_match (sepc p) w s1 s2 ->
+  Mem.nextblock (get_mem s1) = Mem.nextblock (get_mem s2).
+Proof.
+  inversion 1; subst; cbn in *.
+  - inv H3. apply H4.
+  - inv H3. apply H4.
+  - inv H2. apply H3.
+Qed.
+
+Lemma unchanged_on_sym P m1 m2:
+  Mem.unchanged_on P m1 m2 ->
+  Mem.nextblock m1 = Mem.nextblock m2 ->
+  Mem.unchanged_on P m2 m1.
+Proof.
+  intros Hinv Hnxt. constructor.
+  - destruct Hinv. congruence.
+  - intros. symmetry. apply Hinv; auto.
+    unfold Mem.valid_block in *. congruence.
+  - intros. symmetry. apply Hinv; auto.
+    rewrite Mem.unchanged_on_perm; eauto.
+    unfold Mem.valid_block. rewrite Hnxt.
+    eapply Mem.perm_valid_block. eauto.
+Qed.
+
 Section SIM.
   Context {p: Clight.program} {Σ: Genv.symtbl -> !li_d --o !li_d} (ps: prog_sim p Σ).
   Variable C: Clight.program.
@@ -449,109 +573,160 @@ Section SIM.
   Notation " 'state2' " := (@Impl.state li_d li_c li_c (semantics1 C)) (at level 1) : sim_scope.
   Open Scope sim_scope.
 
-  Inductive state_match {ind} (ms: ind -> state -> state -> Prop): ind -> state1 -> state2 -> Prop :=
-  | st_match: forall (s1 s2: state) σ1 i,
-      ms i s1 s2 ->  ps σ1 (get_mem s2)->
-      state_match ms i (st1 s1 σ1) (st2 s2)
-  | ext_match: forall (s1 s2: state) σ1 t1 t2 i,
-      ms i s1 s2 -> t1 = t2 ->
-      ps σ1 (get_mem s2)->
-      state_match ms i (ext1 s1 t1 σ1) (ext2 s2 t2).
-
   Variable se: Genv.symtbl.
-  (* Let vars := module_var (Clight.globalenv se p). *)
-  Let sepv := sepc p se.
-  Instance sepv_frame: KripkeFrame unit (sepc_world p se).
-  Proof. exact (cklr_kf sepv). Qed.
+  Let sepv := sepc p.
+
+  Inductive comp_state_match:  world sepv -> state1 -> state2 -> Prop :=
+  | st_match: forall (s1 s2: state) σ1 se m Hvb,
+      state_match sepv (sepcw p se m Hvb) s1 s2 ->  ps σ1 m ->
+      comp_state_match (sepcw p se m Hvb) (st1 s1 σ1) (st2 s2)
+  | ext_match: forall (s1 s2: state) σ1 t1 t2 se m Hvb,
+      state_match sepv (sepcw p se m Hvb) s1 s2 ->
+      t1 = t2 -> ps σ1 m ->
+      comp_state_match (sepcw p se m Hvb) (ext1 s1 t1 σ1) (ext2 s2 t2).
 
   Inductive cc_query: (world sepv) -> query li_c -> query li_c -> Prop :=
-  | cc_query_intro: forall w q1 q2,
-      match_query (cc_c sepv) w q1 q2 ->
-      (init_mem _ _  ps) (cq_mem q2) ->
-      cc_query w q1 q2.
+  | cc_query_intro: forall se m Hvb q1 q2,
+      match_query (cc_c sepv) (sepcw p se m Hvb) q1 q2 ->
+      (init_mem _ _  ps) m ->
+      cc_query (sepcw p se m Hvb) q1 q2.
 
   Program Definition sepcc :=
     {|
     ccworld := ccworld (cc_c sepv);
     match_senv := match_senv (cc_c sepv);
     match_query := cc_query;
-    match_reply := match_reply (cc_c sepv);
+    match_reply _ r1 r2 := exists w, (cc_c_reply sepv) w r1 r2;
     |}.
+  Next Obligation.
+    inv H. auto.
+  Qed.
+  Next Obligation.
+    inv H. auto.
+  Qed.
 
   Theorem fsim_abs_impl:
     forward_simulation cc_id sepcc sem_abs sem_impl.
   Proof.
-    pose proof (semantics1_rel C sepv) as [[ind ord match_st _ H _]].
     constructor. econstructor; eauto. instantiate (1 := fun _ _ _ => _). cbn beta.
     intros se1 se2 w Hse Hse1. cbn -[sem_abs sem_impl semantics1] in *.
+    inv Hse. clear se. rename se2 into se.
     eapply link_linkorder in Hlk as [HseC Hsep].
     eapply Genv.valid_for_linkorder in HseC; eauto.
     eapply Genv.valid_for_linkorder in Hsep; eauto.
-    specialize (H se1 se2 w Hse HseC).
-    destruct Hse as [<- <-].
-    pose (ms := state_match (match_st se se w)).
-    (* instantiate (1 := ms). *)
-    eapply Build_fsim_properties with (match_states := ms) (order := ord).
-    - intros q1 q2 Hq. inv Hq. exploit @fsim_match_valid_query; eauto.
-    - cbn. intros q1 q2 s1 Hq Hs1. cbn in Hs1. inv Hs1. inv Hq.
-      edestruct @fsim_match_initial_states as (i & s2 & Hiq & Hs); eauto.
-      exists i, (st2 s2). split. constructor. auto.
-      eapply st_match. apply Hs. eapply correct_cond. auto. inv Hiq. apply H2.
-    - intros wx s1 s2 r1 Hs Hfs. inv Hfs. inv Hs.
-      edestruct @fsim_match_final_states; eauto.
-      eexists. split. constructor. apply H1. apply H1.
-    - intros i s1 s2 q1 Hs Hae. inv Hae. inv Hs.
-      exists tt, q1. repeat apply conj; try constructor.
-      intros r1 r2 s1' Hr Hae. inv Hr. inv Hae.
-      exists i, (ext2 s0 t). split. constructor. econstructor; eauto.
-    - intros s1 t s1' Hstep i s2 Hs. inv Hstep.
-      + inv Hs.
-        edestruct @fsim_simulation as (i' & s2' & Hstep' & Hm); eauto.
-        eexists i', (st2 s2'). split.
-        * destruct Hstep'.
-          -- left. clear -H1. inv H1. econstructor; eauto. constructor. apply H.
-             clear -H0. induction H0. constructor.
-             econstructor; eauto. constructor. auto.
-          -- right. clear -H1. destruct H1. split; auto. clear H0.
-             induction H. constructor.
-             econstructor; eauto. constructor. auto.
-        * constructor. auto. eapply mem_scope; eauto.
-          admit. (* unfortunately we know nothing from match_st *)
-      + inv Hs.
-        edestruct @fsim_match_external as (w' & qtgt & Hext & mq & msenv & fsim_match_after_ext); eauto.
-        edestruct (simulation _ _ ps) as (rb' & qtgt' & m' & qrel & rrel & impl & mem_unchange & Hs'); eauto.
-        assert (cc_c_reply sepv w' rb rb').
-        {
-          unfold sepv. destruct rb as [vres_src m_src]. destruct rb' as [vres_tgt m_tgt].
+    pose (ms := fun s1 s2 => exists w, comp_state_match w s1 s2 /\ match_stbls sepv w se se).
+    apply forward_simulation_step with (match_states := ms).
+    - intros ? ? Hq. inv Hq. inv H1.
+      cbn. eapply Genv.is_internal_match; eauto.
+      + instantiate (1 := p).
+        repeat apply conj; auto.
+        induction (AST.prog_defs (_ C)) as [ | [id [f|v]] defs IHdefs];
+          repeat (econstructor; eauto).
+        * apply incl_refl.
+        * apply linkorder_refl.
+        * instantiate (1 := fun _ => eq). reflexivity.
+        * instantiate (1 := eq). destruct v; constructor; auto.
+      + eapply match_stbls_proj; eauto. constructor.
+      + cbn. congruence.
+    - intros q1 q2 s1 Hq Hs1. inv Hq. inv H1. inv Hs1. inv H1.
+      set (w := sepcw p se m Hvb0).
+      assert (Hge: genv_match C sepv w (globalenv se C) (globalenv se C)).
+      {
+        eapply (rel_push_rintro (fun se=> globalenv se C) (fun se=> globalenv se C)).
+        constructor.
+      }
+      transport_hyps.
+      exists (st2 (Callstate vf2 vargs2 Kstop m2)). split.
+      + constructor. econstructor; eauto.
+        * revert vargs2 H0. clear -H12.
+          induction H12; inversion 1; subst; constructor; eauto.
+          eapply val_casted_inject; eauto.
+        * eapply match_stbls_nextblock; eauto.
           constructor.
-          - inv H3. inv rrel.
-            apply val_inject_refl.
-          - cbn. destruct w'. admit. (* memory extension preserves *)
+      + exists w. split; try constructor.
+        * constructor; eauto.
+          -- clear -H0. induction H0; constructor; eauto.
+          -- constructor.
+        * apply correct_cond; eauto.
+    - intros s1 s2 r1 (w & Hs & Hge) H. inv H. inv Hs. inv H0. inv H3.
+      eexists. split.
+      + constructor. inv H6.
+        constructor.
+      + eexists. constructor; eauto.
+    - intros s1 s2 qx1 (w & Hs & Hge) Hq1.
+      inv Hq1. inv Hs. eexists tt, _.
+      repeat apply conj; try constructor.
+      intros r1 r2 s1' Hr1 Hs1'. inv Hr1. inv Hs1'.
+      eexists. split.
+      + constructor.
+      + econstructor. split; try econstructor; eauto. constructor; eauto.
+    - intros s1 t s1' Hstep s2 (w & Hs & Hge). inv Hstep.
+      + inv Hs. inv Hge. set (w := sepcw p se m0 Hvb) in *.
+        assert (Hge': genv_match C sepv w (globalenv se C) (globalenv se C)).
+        {
+          eapply (rel_push_rintro (fun se=> globalenv se C) (fun se=> globalenv se C)).
+          subst w. constructor.
         }
-        edestruct fsim_match_after_ext as (i' & s2' & Haft & Hs2); eauto. exists w'. split. rauto. eauto.
-        exists i', (ext2 s2' w0). split.
-        * left. apply plus_one.
-          econstructor. apply Hext. apply Haft.
-          assert (qtgt = qtgt').
-          {
-            destruct qtgt as [vf0 sg0 args0 m0].
-            destruct qtgt' as [vf1 sg1 args1 m1].
-            inv qrel. inv Hext. inv H3. inv mq. f_equal.
-            cbn in H12. SearchAbout Val.inject inject_id.
-            rewrite val_inject_id in H12. inv H12. auto.
-            congruence.
-            admit.              (* Vundef args *)
-          }
-          rewrite H5. apply impl.
-        * econstructor. apply Hs2. auto.
-          assert (m' = get_mem s2').
-          {
-            inv Haft. inv rrel. auto.
-          }
-          rewrite <- H5. apply Hs'.
-      + admit.
-    - admit.
-  Admitted.
+        eapply step_rel in H; eauto.
+        2: { repeat rstep. }
+        destruct H as (s2' & Hstep' & Hs2').
+        exists (st2 s2'). split.
+        * constructor. apply Hstep'.
+        * destruct Hs2' as (w' & Hw' & Hs2').
+          inv Hw'. eexists (sepcw  _ _ _ _). split; constructor; eauto.
+      + cbn in *. inv Hs. rename s' into s1. rename s0 into s'.
+        inv Hge. set (w := sepcw p se m0 Hvb) in *.
+        assert (Hsim: exists q', at_external (globalenv se C) s' q' /\ match_query (cc_c sepv) w qb q').
+        {
+          inv H. inv H6.
+          assert (vf <> Vundef). destruct vf; cbn in *; try congruence.
+          assert (genv_match C sepv w (globalenv se C) (globalenv se C)).
+          eapply (rel_push_rintro (fun se=> globalenv se C) (fun se=> globalenv se C)).
+          subst w; constructor.
+          transport_hyps.
+          eexists. split.
+          - econstructor. eauto.
+          - inv H2. constructor; auto.
+            clear -H12. induction H12; constructor; auto.
+        }
+        destruct Hsim as (q' & Hsim & Hq). inversion Hq.
+        assert (q_rel' qa q' m2).
+        {
+          inv H2. inv H15.
+          replace vf1 with vf2.
+          2: { cbn in H3. rewrite val_inject_id in H3. inv H3; try congruence. }
+          constructor. clear -H4. induction H4; constructor; auto.
+          cbn in H. rewrite val_inject_id in H. auto.
+        }
+        eapply mem_scope with (m' := m2) in H8; eauto.
+        2: { inv H5. auto. }
+        edestruct simulation as (m' & impl & Hmem & Hnext & Hs'); eauto.
+        assert (Hvb': forall b ofs, module_var (globalenv se p) b ofs -> Mem.valid_block m' b).
+        {
+          intros b ofs Hb. eapply Hm2 in Hb. inv H5.
+          eapply Mem.valid_block_unchanged_on; eauto.
+          eapply Mem.valid_block_unchanged_on; eauto.
+        }
+        assert (Hsim': exists s1', after_external s' (r_with_mem ra m') s1' /\ state_match sepv (sepcw p se m' Hvb') s1 s1').
+        {
+          inv H2. unfold r_with_mem. inv H16. inv Hsim. inv H0. inv H6.
+          eexists _. split.
+          - econstructor.
+          - econstructor. apply val_inject_refl.
+            eapply sepc_cont_match_le. eauto. cbn in *.
+            eapply mem_match_sim; eauto.
+        }
+        destruct Hsim' as (s1' & H' & Hs1').
+        exists (ext2 s1' w0). split.
+        * eapply Impl.step_at_external; eauto.
+        * eexists. split. constructor; eauto.
+          constructor.
+      + inv Hs.
+        exists (st2 s0). split.
+        * constructor.
+        * eexists. split; eauto. constructor; auto.
+    - apply well_founded_ltof.
+  Qed.
   Close Scope sim_scope.
 End SIM.
 
@@ -574,7 +749,7 @@ Module Comp.
     Inductive state_match : nat -> Smallstep.state L1 -> state -> Prop :=
     | match_st: forall b ts ts' σ,
         (forall r tr tr', has )
-        has σ (ts, ts') ->
+          has σ (ts, ts') ->
         state_match (true, ts) (st (true, ts') σ)
     | match_ext: forall b ts ts' σ t,
         state_match (b, ts) (ext (true, ts') t σ).
