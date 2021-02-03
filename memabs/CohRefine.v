@@ -48,7 +48,7 @@ Section LTS.
   Qed.
 End LTS.
 
-(* So far I don't know how to prove this generally. Therefore, I think I will
+(* So far I don't know how to prove these generally. Therefore, I think I will
 just add it to the DeepSEA correct criterion and it should be fairly
 straightforward for both getter/setter cases and abstract function cases *)
 Lemma trace_split {liA liB: language_interface} (σ: !liA --o !liB) q t r rest:
@@ -57,9 +57,165 @@ Lemma trace_split {liA liB: language_interface} (σ: !liA --o !liB) q t r rest:
            exec σ q t1 r /\
            has (next σ t1 q r) (t2, rest).
 Admitted.
-(* Proof. *)
-(*   intros H. *)
-(*   assert (H': exists t', has σ (t', (q,r) :: nil)). *)
+Lemma trace_empty {liA liB: language_interface} (σ: !liA --o !liB) t:
+  has σ (t, nil) -> t = nil.
+Admitted.
+
+Section MIX_SEM.
+
+  Context {liA liB: language_interface} (Σ: Genv.symtbl -> !liA --o !liB).
+  Context {liC liD: language_interface} (L: semantics liC liD) (HL: determinate L).
+  Variable li_rel: token liB -> token liC -> Prop.
+
+  Definition li_rel_determ : Prop :=
+    forall qx rx qy ry qx' rx' qy' ry',
+    li_rel (qx, rx) (qy, ry) ->
+    li_rel (qx', rx') (qy', ry') ->
+    qy = qy' -> qx = qx' /\ (rx = rx' -> ry = ry').
+
+  Hypothesis lr_determ: li_rel_determ.
+
+  Lemma star_ext_state se σ s w ws t s':
+    Star (Abs.lts Σ L li_rel se) (Abs.ext L s (w :: ws) σ) t s' ->
+    s' = Abs.ext L s (w :: ws) σ.
+  Proof.
+    intros Hstar.
+    inv Hstar. reflexivity. inv H.
+  Qed.
+
+  Lemma trace_prefix se s w σ t r:
+    lts_trace (Abs.lts Σ L li_rel se) false (Abs.ext L s w σ) t r ->
+    exists t', t = w ++ t'.
+  Proof.
+    revert t. induction w.
+    - intros. eexists. reflexivity.
+    - intros t Hlts.
+      inv Hlts. inv H. inv H. inv H0.
+      inv H1. destruct w.
+      + eexists. cbn. reflexivity.
+      + eapply star_ext_state in H.
+        subst. exploit IHw. eauto.
+        intros [? ?]. eexists.
+        rewrite <- app_comm_cons. f_equal. eauto.
+  Qed.
+
+  Program Definition mix_sem_lmap se: !liA --o liD :=
+    {|
+    has '(t, u) := lts_lmaps (Abs.semantics (skel L) li_rel Σ L se) t u;
+    |}.
+  Next Obligation.
+    rename l0 into bot_tr'. rename l into bot_tr.
+    rename q0 into q'. rename r0 into r'.
+    intros Hcoh. assert (q' = q -> r' = r /\ bot_tr' = bot_tr).
+    {
+      intros ->. inv H. inv H0. inv H5. inv H7.
+      exploit (sd_initial_determ (HL se)). apply H. apply H0.
+      intros ->. clear H H0 H2 H3.
+      revert bot_tr Hcoh H8. induction H6.
+      - intros tr Hcoh Hlts.
+        inv Hlts. apply IHlts_trace. auto.
+        replace s' with s'0. auto.
+        clear - lr_determ Hcoh HL H H0 H1 H6. revert s'0 H0 H1.
+        induction H.
+        + intros. inv H0; auto.
+          inv H6.
+          * inv H0. inv H.
+            -- exploit (sd_final_nostep (HL se)); eauto. easy.
+            -- exploit (sd_final_noext (HL se)); eauto. easy.
+          * inv H0. inv H.
+        + intros. specialize (IHstar H6).
+          inv H2.
+          * inv H3.
+            -- inv H1. inv H.
+               ** exploit (sd_final_nostep (HL se)); eauto. easy.
+               ** exploit (sd_final_noext (HL se)); eauto. easy.
+            -- inv H1. inv H.
+          * inv H.
+            -- inv H4.
+               ** exploit (sd_determ (HL se)). apply H1. apply H10.
+                  exploit (sd_traces (HL se)). apply H1.
+                  exploit (sd_traces (HL se)). apply H10. intros l1 l2.
+                  intros [Hmt Ht].
+                  assert (t1 = t3 /\ t2 = t4).
+                  destruct t1. inv Hmt. split; auto.
+                  destruct t1. 2: { simpl in l2. try omegaContradiction. }
+                  destruct t3. inv Hmt. destruct t3.
+                  2: { simpl in l1. try omegaContradiction. }
+                  simpl in H7. inv H7. split; auto.
+                  exploit Ht. apply H. intros <-.
+                  destruct H as [<- <-].
+                  eapply IHstar. auto. auto.
+               ** exploit (sd_at_external_nostep (HL se)); eauto. easy.
+            -- inv H4.
+               ** exploit (sd_at_external_nostep (HL se)); eauto. easy.
+               ** exploit (sd_at_external_determ (HL se)). apply H1. apply H11.
+                  intros <-. inv H8. inv H13.
+                  exploit lr_determ. apply H9. apply H16. auto.
+                  intros [<- Hr].
+                  destruct w; destruct w0.
+               ++ pose proof (has_coh _ _ _ _ H H4).
+                  cbn in H8. exploit H8. constructor.
+                  intros [Hl Hqr]. inv Hl.
+                  cbn in H15. exploit (proj2 H15). auto. intros <-.
+                  exploit Hr. auto. intros <-.
+                  exploit (sd_after_external_determ (HL se)). apply H2. apply H12.
+                  intros <-. simpl in H7. subst. apply IHstar. auto. auto.
+               ++ pose proof (has_coh _ _ _ _ H H4).
+                  cbn in H8. exploit H8. constructor.
+                  intros [Hl Hqr]. inv Hl.
+                  cbn in H15. exploit (proj2 H15). auto. intros <-.
+                  exploit Hqr. constructor. intros. easy.
+               ++ pose proof (has_coh _ _ _ _ H H4).
+                  cbn in H8. exploit H8. constructor.
+                  intros [Hl Hqr]. inv Hl.
+                  cbn in H15. exploit (proj2 H15). auto. intros <-.
+                  exploit Hqr. constructor. intros. easy.
+               ++ pose proof (has_coh _ _ _ _ H H4).
+                  cbn in H8. exploit H8.
+                  exploit star_ext_state. apply H0. intros ->.
+                  exploit star_ext_state. apply H5. intros ->.
+                  exploit trace_prefix. apply H6. intros [? ->].
+                  exploit trace_prefix. apply H3. intros [? ->].
+                  eapply prefix_coh. eauto.
+                  intros [Hl Hqr]. inv Hl.
+                  cbn in H15. exploit (proj2 H15). auto.
+                  intros <-. exploit Hr. auto. intros <-.
+                  exploit (sd_after_external_determ (HL se)). apply H2. apply H12.
+                  intros <-. simpl in H7. subst.
+                  exploit Hqr. auto. intros. inv H7.
+                  apply IHstar. auto. auto.
+            -- inv H4. simpl in H7. subst.
+               apply IHstar. auto. auto.
+      - intros tr Hcoh Hlts. inv Hcoh.
+        + inv H. inv Hlts.
+          * inv H. exploit (sd_final_determ (HL se)). apply H0. apply H4. easy.
+          * inv H.
+        + inv Hlts. inv H. inv H0.
+          exploit (sd_final_determ (HL se)). apply H1. apply H4. easy.
+      - intros tr Hcoh Hlts.
+        inv Hcoh.
+        + inv Hlts. inv H1. inv H.
+        + destruct b as [q' r'].
+          inv Hlts. inv H. inv H7.
+          inv H0. inv H9. exploit H5. auto.
+          intros Hcoh'.
+          exploit IHlts_trace; eauto. intros [<- <-]. easy.
+    }
+    split. split; auto. apply H1. intros. apply H1. inv H2. auto.
+  Qed.
+
+End MIX_SEM.
+
+Lemma determ_li_dc: li_rel_determ li_rel.
+Proof.
+  unfold li_rel_determ.
+  intros. inv H. inv H0.
+  split. auto. intros. inv H. auto.
+Qed.
+
+Definition clight_mix_lmap p (Σ : Genv.symtbl -> !li_d --o !li_d) se :=
+  mix_sem_lmap Σ (semantics1 p) (clight_determinate p)
+               li_rel determ_li_dc se.
 
 Section REFINE.
   Variable se: Genv.symtbl.
@@ -68,11 +224,9 @@ Section REFINE.
   (* li_dc is simply an adapter that forgets the memory in C calling
   convertions *)
   Let T1 := clight C se @ !li_dc @ (Σ se).
-  Let sk := AST.erase_program C.
-  (* Note that we can't prove the determinism of the mixed semantics. However we
-  should be able to prove the coherence when embed it into a linear function *)
-  Context (H : determinate (Abs.c_semantics sk C Σ)).
-  Let T2 := compcerto_lmap (Abs.c_semantics sk C Σ) H se.
+  Let T2 := clight_mix_lmap C Σ se.
+  (* Context (H : determinate (Abs.c_semantics sk C Σ)). *)
+  (* Let T2 := compcerto_lmap (Abs.c_semantics sk C Σ) H se. *)
 
   Lemma mix_sem_ref: ref T1 T2.
   Proof.
@@ -82,16 +236,16 @@ Section REFINE.
     destruct top_tr as [top_q top_r].
     inversion Htop as [? s0 ? ? Hvq Hinit Htrace]. subst.
     econstructor; [ apply Hvq | econstructor; apply Hinit | ].
-    clear Hvq Hinit Htop. clear T1 H T2.
+    clear Hvq Hinit Htop. clear T1 T2.
     remember (Σ se) as σ. clear Heqσ.
     revert mid_tr_d bottom_tr σ Hmid Hbot.
     eapply lts_trace_ind
       with (P := fun b s t r =>
-             forall (mid_tr_d : list (d_query * d_reply)) (bottom_tr : token (!li_d))
-               (σ : !li_d --o !li_d),
-               dag_lmaps li_dc mid_tr_d t ->
-               has σ (bottom_tr, mid_tr_d) ->
-               lts_trace (Abs.lts Σ (semantics1 C) li_rel se) true (Abs.st (semantics1 C) s σ) bottom_tr r).
+                   forall (mid_tr_d : list (d_query * d_reply)) (bottom_tr : token (!li_d))
+                          (σ : !li_d --o !li_d),
+                     dag_lmaps li_dc mid_tr_d t ->
+                     has σ (bottom_tr, mid_tr_d) ->
+                     lts_trace (Abs.lts Σ (semantics1 C) li_rel se) true (Abs.st (semantics1 C) s σ) bottom_tr r).
     4: {  apply Htrace. }
     - intros until r. intros Hstar H IH.
       intros ? ? ? Hmid Hbot. specialize (IH _ _ _ Hmid Hbot).
@@ -105,8 +259,8 @@ Section REFINE.
         eapply Abs.step_internal; eauto.
     - intros. eapply lts_trace_steps.
       eapply Smallstep.star_refl.
-      inv H0. assert (bottom_tr = nil). admit.
-      subst. eapply lts_trace_final.
+      inv H0. eapply trace_empty in H1. subst.
+      eapply lts_trace_final.
       eapply Abs.final_state_intro. auto.
     - intros s qx rx s' t r Hext Haft H' IH.
       intros ? ? ? Hmid Hbot.
@@ -127,5 +281,5 @@ Section REFINE.
       + destruct a as [qx rx].
         eapply lts_ext_cons.
         constructor. econstructor. apply IHt1.
-
+  Qed.
 End REFINE.
