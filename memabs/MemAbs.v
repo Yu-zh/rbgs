@@ -7,6 +7,8 @@ Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
 Require Import SemDef SepCKLR.
 
+(* A relation that allows arguments in C language interface to be more
+   defined than those in abstract language interface *)
 Inductive q_rel': query li_d -> query li_c -> mem -> Prop:=
 | q_rel'_intro:
     forall vf sg args args' m,
@@ -18,6 +20,15 @@ Definition r_with_mem (r: reply li_d) m: reply li_c :=
   match r with
     {|dr_retval:=ret|} => ({|cr_retval:=ret;cr_mem:=m|})
   end.
+
+Inductive reactive {liA liB: language_interface} (σ: !liA --o !liB) : Prop :=
+| reactive_intro
+    (SPLIT: (forall t q r rest, has σ (t, (q,r) :: rest) ->
+                   exists t1 t2, t = t1 ++ t2 /\
+                            exec σ q t1 r /\
+                            reactive (next σ t1 q r)))
+    (EMPTY: (forall t, has σ (t, nil) -> t = nil)):
+    reactive σ.
 
 Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
   {
@@ -43,6 +54,7 @@ Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
   correct_cond: forall m se,
       Genv.valid_for (AST.erase_program p) se ->
       init_mem m -> mspec_rel (Σ se) m;
+  reactive_spec: forall se, reactive (Σ se);
   }.
 
 Definition get_mem (s: state) : mem :=

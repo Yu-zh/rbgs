@@ -5,7 +5,7 @@ Require Import LanguageInterface Events Globalenvs Values Memory AST Errors Smal
 Require Import Clight Ctypes Cop SimplLocalsproof.
 Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
-Require Import SemDef.
+Require Import SemDef MemAbs.
 
 Section LTS.
   Context {liA liB S} (L : lts liA liB S).
@@ -47,19 +47,6 @@ Section LTS.
     - eauto.
   Qed.
 End LTS.
-
-(* So far I don't know how to prove these generally. Therefore, I think I will
-just add it to the DeepSEA correct criterion and it should be fairly
-straightforward for both getter/setter cases and abstract function cases *)
-Lemma trace_split {liA liB: language_interface} (σ: !liA --o !liB) q t r rest:
-  has σ (t, (q,r) :: rest) ->
-  exists t1 t2, t = t1 ++ t2 /\
-           exec σ q t1 r /\
-           has (next σ t1 q r) (t2, rest).
-Admitted.
-Lemma trace_empty {liA liB: language_interface} (σ: !liA --o !liB) t:
-  has σ (t, nil) -> t = nil.
-Admitted.
 
 Section MIX_SEM.
 
@@ -221,12 +208,11 @@ Section REFINE.
   Variable se: Genv.symtbl.
   Variable C: Clight.program.
   Variable Σ: Genv.symtbl -> !li_d --o !li_d.
-  (* li_dc is simply an adapter that forgets the memory in C calling
-  convertions *)
+  Context {p: Clight.program} (ps: prog_sim p Σ).
+  (* li_dc is simply an adapter that forgets the memory in C calling convertions
+  so that outgoing calls from C can interact with the specification *)
   Let T1 := clight C se @ !li_dc @ (Σ se).
   Let T2 := clight_mix_lmap C Σ se.
-  (* Context (H : determinate (Abs.c_semantics sk C Σ)). *)
-  (* Let T2 := compcerto_lmap (Abs.c_semantics sk C Σ) H se. *)
 
   Lemma mix_sem_ref: ref T1 T2.
   Proof.
@@ -237,18 +223,20 @@ Section REFINE.
     inversion Htop as [? s0 ? ? Hvq Hinit Htrace]. subst.
     econstructor; [ apply Hvq | econstructor; apply Hinit | ].
     clear Hvq Hinit Htop. clear T1 T2.
-    remember (Σ se) as σ. clear Heqσ.
-    revert mid_tr_d bottom_tr σ Hmid Hbot.
+    pose proof (reactive_spec _ _ ps se) as RS.
+    remember (Σ se) as σ. clear Heqσ ps.
+    revert mid_tr_d bottom_tr σ RS Hmid Hbot.
     eapply lts_trace_ind
       with (P := fun b s t r =>
-                   forall (mid_tr_d : list (d_query * d_reply)) (bottom_tr : token (!li_d))
-                          (σ : !li_d --o !li_d),
+                   forall (mid_tr_d : list (d_query * d_reply))
+                     (bottom_tr : token (!li_d)) (σ : !li_d --o !li_d),
+                     reactive σ ->
                      dag_lmaps li_dc mid_tr_d t ->
                      has σ (bottom_tr, mid_tr_d) ->
                      lts_trace (Abs.lts Σ (semantics1 C) li_rel se) true (Abs.st (semantics1 C) s σ) bottom_tr r).
     4: {  apply Htrace. }
     - intros until r. intros Hstar H IH.
-      intros ? ? ? Hmid Hbot. specialize (IH _ _ _ Hmid Hbot).
+      intros ? ? ? RS Hmid Hbot. specialize (IH _ _ _ RS Hmid Hbot).
       inversion IH as [? s1 ? ? Hstar' | | ]. subst.
       eapply lts_trace_steps; [ | eauto].
       eapply Smallstep.star_trans; eauto.
@@ -257,17 +245,20 @@ Section REFINE.
       + eapply Smallstep.star_refl.
       + eapply Smallstep.star_left; eauto.
         eapply Abs.step_internal; eauto.
-    - intros. eapply lts_trace_steps.
+    - intros until σ. intros RS Hmid Hbot. eapply lts_trace_steps.
       eapply Smallstep.star_refl.
-      inv H0. eapply trace_empty in H1. subst.
+      inv Hmid. inv RS. clear SPLIT.
+      eapply EMPTY in Hbot. subst.
       eapply lts_trace_final.
       eapply Abs.final_state_intro. auto.
     - intros s qx rx s' t r Hext Haft H' IH.
-      intros ? ? ? Hmid Hbot.
+      intros ? ? ? RS Hmid Hbot.
       inversion Hmid as [| [qd rd] [? ?] mid_tr_d' mid_tr_c' Hq Hmid']. subst.
-      eapply trace_split in Hbot as (t1 & t2 & Ht & Hexec & Hnext).
+      inv RS. clear EMPTY.
+      edestruct SPLIT as (t1 & t2 & Ht & Hexec & Hnext). apply Hbot.
       subst bottom_tr.
-      specialize (IH _ _ _ Hmid' Hnext).
+      assert (Hnext': has (next σ t1 qd rd) (t2, mid_tr_d')) by apply Hbot.
+      specialize (IH _ _ _ Hnext Hmid' Hnext'). clear SPLIT.
       inversion IH as [? s1 ? ? Hstar | | ]. subst.
       eapply lts_trace_concat; eauto.
       eapply lts_ext_init.
