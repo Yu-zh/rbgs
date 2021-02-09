@@ -5,57 +5,7 @@ Require Import LanguageInterface Events Globalenvs Values Memory AST Errors Smal
 Require Import Clight Ctypes Cop SimplLocalsproof.
 Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
-Require Import SemDef SepCKLR.
-
-(* A relation that allows arguments in C language interface to be more
-   defined than those in abstract language interface *)
-Inductive q_rel': query li_d -> query li_c -> mem -> Prop:=
-| q_rel'_intro:
-    forall vf sg args args' m,
-      list_rel Val.lessdef args args' ->
-      q_rel' ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
-             ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args';cq_mem:=m|}) m.
-
-Definition r_with_mem (r: reply li_d) m: reply li_c :=
-  match r with
-    {|dr_retval:=ret|} => ({|cr_retval:=ret;cr_mem:=m|})
-  end.
-
-Inductive reactive {liA liB: language_interface} (σ: !liA --o !liB) : Prop :=
-| reactive_intro
-    (SPLIT: (forall t q r rest, has σ (t, (q,r) :: rest) ->
-                   exists t1 t2, t = t1 ++ t2 /\
-                            exec σ q t1 r /\
-                            reactive (next σ t1 q r)))
-    (EMPTY: (forall t, has σ (t, nil) -> t = nil)):
-    reactive σ.
-
-Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
-  {
-  mspec_rel :> (!li_d --o !li_d) -> mem -> Prop;
-  init_mem : mem -> Prop;
-
-  mem_scope : forall m m' σ se,
-      Genv.valid_for (AST.erase_program p) se ->
-      Mem.unchanged_on (module_var (Clight.globalenv se p)) m m' ->
-      mspec_rel σ m ->
-      mspec_rel σ m';
-  simulation: forall σ dq dr t m se cq,
-      Genv.valid_for (AST.erase_program p) se ->
-      mspec_rel σ m -> exec σ dq t dr ->
-      q_rel' dq cq m ->
-      exists m',
-        has (clight_bigstep p se @ !li_dc) (t, (cq, r_with_mem dr m')) /\
-        Mem.unchanged_on (fun b ofs => ~ module_var (Clight.globalenv se p) b ofs) m m' /\
-        (* Mem.unchanged_on allowed non-local variables to grow and we forbid it
-        by adding constraints on Mem.nextblock *)
-        Mem.nextblock m = Mem.nextblock m' /\
-        mspec_rel (next σ t dq dr) m';
-  correct_cond: forall m se,
-      Genv.valid_for (AST.erase_program p) se ->
-      init_mem m -> mspec_rel (Σ se) m;
-  reactive_spec: forall se, reactive (Σ se);
-  }.
+Require Import SemDef SepCKLR ProgSim.
 
 Definition get_mem (s: state) : mem :=
   match s with
@@ -344,6 +294,6 @@ Section SIM.
         * constructor.
         * eexists. split; eauto. constructor; auto.
     - apply well_founded_ltof.
-  Qed.
-  Close Scope sim_scope.
-End SIM.
+    Qed.
+    Close Scope sim_scope.
+  End SIM.

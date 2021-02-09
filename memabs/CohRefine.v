@@ -5,7 +5,7 @@ Require Import LanguageInterface Events Globalenvs Values Memory AST Errors Smal
 Require Import Clight Ctypes Cop SimplLocalsproof.
 Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
-Require Import SemDef MemAbs.
+Require Import SemDef MemAbs ProgSim.
 
 Section LTS.
   Context {liA liB S} (L : lts liA liB S).
@@ -209,6 +209,7 @@ Section REFINE.
   Variable C: Clight.program.
   Variable Σ: Genv.symtbl -> !li_d --o !li_d.
   Context {p: Clight.program} (ps: prog_sim p Σ).
+  (* Hypothesis RS: forall σ, reachable (Σ se) σ -> reactive σ. *)
   (* li_dc is simply an adapter that forgets the memory in C calling convertions
   so that outgoing calls from C can interact with the specification *)
   Let T1 := clight C se @ !li_dc @ (Σ se).
@@ -217,26 +218,29 @@ Section REFINE.
   Lemma mix_sem_ref: ref T1 T2.
   Proof.
     intros trace. cbn -[clight].
-    destruct trace as [bottom_tr top_tr].
+    destruct trace as [bot_tr top_tr].
     intros (mid_tr_c & (mid_tr_d & Hbot & Hmid) & Htop).
     destruct top_tr as [top_q top_r].
     inversion Htop as [? s0 ? ? Hvq Hinit Htrace]. subst.
     econstructor; [ apply Hvq | econstructor; apply Hinit | ].
     clear Hvq Hinit Htop. clear T1 T2.
     pose proof (reactive_spec _ _ ps se) as RS.
-    remember (Σ se) as σ. clear Heqσ ps.
-    revert mid_tr_d bottom_tr σ RS Hmid Hbot.
+    remember (Σ se) as σ0. clear Heqσ0.
+    pose proof (self_reachable σ0) as Hreach.
+    remember (reachable σ0) as reachp.
+    revert mid_tr_d bot_tr Hreach Hmid Hbot.
+    generalize σ0. subst reachp.
     eapply lts_trace_ind
       with (P := fun b s t r =>
-                   forall (mid_tr_d : list (d_query * d_reply))
-                     (bottom_tr : token (!li_d)) (σ : !li_d --o !li_d),
-                     reactive σ ->
+                   forall (σ : !li_d --o !li_d) (mid_tr_d : token (!li_d))
+                     (bot_tr : token (!li_d)) ,
+                     reachable σ0 σ ->
                      dag_lmaps li_dc mid_tr_d t ->
-                     has σ (bottom_tr, mid_tr_d) ->
-                     lts_trace (Abs.lts Σ (semantics1 C) li_rel se) true (Abs.st (semantics1 C) s σ) bottom_tr r).
+                     has σ (bot_tr, mid_tr_d) ->
+                     lts_trace (Abs.lts Σ (semantics1 C) li_rel se) true (Abs.st (semantics1 C) s σ) bot_tr r).
     4: {  apply Htrace. }
     - intros until r. intros Hstar H IH.
-      intros ? ? ? RS Hmid Hbot. specialize (IH _ _ _ RS Hmid Hbot).
+      intros ? ? ? Hreach Hmid Hbot. specialize (IH _ _ _ Hreach Hmid Hbot).
       inversion IH as [? s1 ? ? Hstar' | | ]. subst.
       eapply lts_trace_steps; [ | eauto].
       eapply Smallstep.star_trans; eauto.
@@ -245,19 +249,19 @@ Section REFINE.
       + eapply Smallstep.star_refl.
       + eapply Smallstep.star_left; eauto.
         eapply Abs.step_internal; eauto.
-    - intros until σ. intros RS Hmid Hbot. eapply lts_trace_steps.
+    - intros until bot_tr. intros Hreach Hmid Hbot. eapply lts_trace_steps.
       eapply Smallstep.star_refl.
-      inv Hmid. inv RS. clear SPLIT.
+      inv Hmid. eapply RS in Hreach. inv Hreach. clear SPLIT.
       eapply EMPTY in Hbot. subst.
       eapply lts_trace_final.
       eapply Abs.final_state_intro. auto.
     - intros s qx rx s' t r Hext Haft H' IH.
-      intros ? ? ? RS Hmid Hbot.
+      intros ? ? ? Hreach Hmid Hbot.
       inversion Hmid as [| [qd rd] [? ?] mid_tr_d' mid_tr_c' Hq Hmid']. subst.
-      inv RS. clear EMPTY.
-      edestruct SPLIT as (t1 & t2 & Ht & Hexec & Hnext). apply Hbot.
-      subst bottom_tr.
+      exploit RS. apply Hreach. inversion 1. clear H EMPTY.
+      edestruct SPLIT as (t1 & t2 & Ht & Hexec). apply Hbot. subst.
       assert (Hnext': has (next σ t1 qd rd) (t2, mid_tr_d')) by apply Hbot.
+      assert (Hnext: reachable σ0 (next σ t1 qd rd)). apply step_reachable; auto.
       specialize (IH _ _ _ Hnext Hmid' Hnext'). clear SPLIT.
       inversion IH as [? s1 ? ? Hstar | | ]. subst.
       eapply lts_trace_concat; eauto.
