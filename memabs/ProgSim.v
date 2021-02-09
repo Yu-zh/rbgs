@@ -118,65 +118,89 @@ Proof.
 Qed.
 
 (* Correctness criterion for absfun modules *)
-(* Section ABSFUN. *)
-(*   (* Something weird about the symbol table *) *)
-(*   Variable (p: Clight.program) (σ: !li_d --o li_d). *)
-(*   Hypothesis sim: *)
-(*     forall se, Genv.valid_for (AST.erase_program p) se -> *)
-(*           forall t q r m, *)
-(*             (* memory extension allows source query to have undefined values so *)
- (*                the simulation in prog_sim is strengthened accordingly, which *)
- (*                means the verification condition here also has to be augmented *) *)
-(*             (* Otherwise, we could changed the calling convention used in the *)
- (*                contextual refinement, which might be a better way to work *)
- (*                around *) *)
-(*             has σ (t, (q, r)) -> query_defined q /\ *)
-(*             has (clight_bigstep p se @ !li_dc) *)
-(*                 (t, (q_with_mem q m, r_with_mem r m)). *)
+Section ABSFUN.
+  (* Something weird about the symbol table *)
+  Variable (σ: !li_d --o li_d).
+  Lemma spec_inv q t r:
+    exec (dag_ext σ) q t r ->
+    next (dag_ext σ) t q r = dag_ext σ.
+  Proof.
+    intros Hexec. inv Hexec.
+    inv H. destruct H0. inv H; inv H0. inv H6. inv H1.
+    rewrite app_nil_r.
+    apply lmap_ext. intros xs ys.
+    split.
+    - inversion 1. destruct H0. inv H0; inv H1.
+      assert (s = s0).
+      {
+        assert (list_coh _ s0 s).
+        eapply prefix_coh with (t1 := a) (t2 := xs).
+        now apply list_coh_refl.
+        pose proof (has_coh _ _ _ _ H4 H7).
+        exploit H1. symmetry. apply H0.
+        intros [? ?]. now apply H6.
+      }
+      subst. apply app_suffix_eq in H2. subst.
+      eexists. split. apply H3. apply H9.
+    - inversion 1. destruct H0.
+      exists (s :: x). split.
+      constructor. apply H0.
+      constructor. auto. apply H1.
+  Qed.
+  Lemma reachable_inv σ':
+    reachable (dag_ext σ) σ' -> σ' = dag_ext σ.
+  Proof.
+    induction 1; auto.
+    subst. now apply spec_inv.
+  Qed.
+  Lemma reactive_dag_ext:
+    reactive (dag_ext σ).
+  Proof.
+    constructor.
+    - intros. inv H. destruct H0. inv H; inv H0.
+      eexists _, _. split; eauto.
+      constructor. exists (s :: nil). split.
+      exploit (dag_comult_cons s).
+      eapply dag_comult_nil. rewrite app_nil_r.
+      intros H. apply H.
+      constructor; auto. constructor.
+    - intros. inv H. destruct H0. inv H; inv H0. auto.
+  Qed.
+  Variable (p: Clight.program).
+  Hypothesis sim:
+    forall se, Genv.valid_for (AST.erase_program p) se ->
+          forall t q r m,
+            (* memory extension allows source query to have undefined values so
+          the simulation in prog_sim is strengthened accordingly, which means
+          the verification condition here also has to be augmented Otherwise, we
+          could changed the calling convention used in the contextual
+          refinement, which might be a better way to work around *)
+            has σ (t, (q, r)) -> query_defined q /\
+                                has (clight_bigstep p se @ !li_dc)
+                                    (t, (q_with_mem q m, r_with_mem r m)).
 
-(*   Program Definition psim: prog_sim p (fun se => dag_ext σ) := *)
-(*     {| *)
-(*     mspec_rel := fun Σ _ => Σ = dag_ext σ; *)
-(*     init_mem := fun _ => True; *)
-(*     |}. *)
-(*   Next Obligation. *)
-(*     exists m. repeat apply conj; try intuition. *)
-(*     { *)
-(*       inv H1. inv H0. destruct H1. inv H0; inv H1. *)
-(*       eapply sim with (m := m) in H6; eauto. *)
-(*       destruct H6. eapply defined_query_with_mem in H0; eauto. *)
-(*       subst. inv H8. inv H3. rewrite app_nil_r. *)
-(*       inv H1. destruct H0. *)
-(*       eexists. split. *)
-(*       apply H0. apply H1. *)
-(*     } *)
-(*     { *)
-(*       inv H1. inv H0. destruct H1. inv H0; inv H1. inv H8. inv H3. *)
-(*       rewrite app_nil_r. *)
-(*       apply lmap_ext. intros xs ys. *)
-(*       split. *)
-(*       - inversion 1. destruct H1. inv H1; inv H3. *)
-(*         assert (s = s0). *)
-(*         { *)
-(*           assert (list_coh _ s0 s). *)
-(*           eapply prefix_coh with (t1 := a) (t2 := xs). *)
-(*           apply list_coh_refl. apply H4. *)
-(*           pose proof (has_coh _ _ _ _ H6 H9). *)
-(*           exploit H3. symmetry. apply H1. *)
-(*           intros [? ?]. apply H8. auto. *)
-(*         } *)
-(*         subst. apply app_suffix_eq in H4. subst. *)
-(*         eexists. split. apply H5. apply H11. *)
-(*       - inversion 1. destruct H1. *)
-(*         exists (s :: x). split. *)
-(*         constructor. apply H1. *)
-(*         constructor. auto. apply H3. *)
-(*     } *)
-(*   Qed. *)
-(*   Next Obligation. *)
-(*     constructor. *)
-(*     { *)
-(*       intros. *)
+  Program Definition psim: prog_sim p (fun se => dag_ext σ) :=
+    {|
+    mspec_rel := fun Σ _ => Σ = dag_ext σ;
+    init_mem := fun _ => True;
+    |}.
 
-(*     } *)
-(* End ABSFUN. *)
+  Next Obligation.
+    exists m. repeat apply conj; try intuition.
+    - inv H1. inv H0. destruct H1. inv H0; inv H1.
+      eapply sim with (m := m) in H6; eauto.
+      destruct H6. eapply defined_query_with_mem in H0; eauto.
+      subst. inv H8. inv H3. rewrite app_nil_r.
+      inv H1. destruct H0.
+      eexists. split.
+      apply H0. apply H1.
+    - now apply spec_inv.
+  Qed.
+
+  Next Obligation.
+    clear sim. induction H.
+    - apply reactive_dag_ext.
+    - eapply reachable_inv in H. subst.
+      rewrite spec_inv; auto.
+  Qed.
+End ABSFUN.
