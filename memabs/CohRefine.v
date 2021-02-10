@@ -7,6 +7,55 @@ Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
 Require Import SemDef MemAbs ProgSim.
 
+Section FSIM_REF.
+  Context {liA liB1 liB2} (L1: semantics liA liB1) (L2: semantics liA liB2).
+  Context (HL1: sem_coherence L1) (HL2: sem_coherence L2).
+  Context (cc: callconv liB1 liB2) (FSIM: forward_simulation 1 cc L1 L2).
+  Let Σ1 := lts_sem L1 HL1.
+  Let Σ2 := lts_sem L2 HL2.
+
+  Lemma fsim_sound_cc: coh_refinement cc Σ1 Σ2 (skel L1).
+  Proof.
+    intros se1 se2 wB Hse Hsk.
+    destruct FSIM as [[ind ord match_states _ H _]].
+    specialize (H _ _ _ Hse Hsk).
+    split.
+    - intros. unfold Σ1. unfold Σ2. cbn.
+      erewrite <- fsim_match_valid_query; eauto.
+    - intros until t. intros Ht Hq. unfold Σ1 in Ht.
+      inversion Ht as [? ? ? ? Hq1 Hs1 Ht1]. subst.
+      exploit @fsim_match_initial_states; eauto. intros (i & s2 & Hs2 & Hs).
+      erewrite <- fsim_match_valid_query in Hq1; eauto.
+      assert (Hr2: exists r2, lts_trace (L2 se2) true s2 t r2 /\ match_reply cc wB r1 r2).
+      {
+        clear Hs1 Hs2 Ht Hq1 Hq. clear Σ1 Σ2. revert i s2 Hs.
+        clear -Ht1 H. induction Ht1.
+        - intros i s2 Hs.
+          exploit @simulation_star; eauto.
+          intros (i' & s2' & Hstar & Hs').
+          specialize (IHHt1 _ _ Hs').
+          destruct IHHt1 as (r2 & Ht' & Hr).
+          exists r2. split; auto.
+          econstructor; eauto.
+        - intros i s2 Hs.
+          exploit @fsim_match_final_states; eauto.
+          intros (r2 & Ht' & Hr).
+          exists r2. split; auto.
+          constructor. auto.
+        - intros i s2 Hs.
+          exploit @fsim_match_external; eauto. cbn.
+          intros ([ ] & q2 & Hext' & <- & <- & Hsim).
+          exploit Hsim. reflexivity. apply H1.
+          intros (i' & s2' & Haft' & Hs2').
+          specialize (IHHt1 _ _ Hs2'). destruct IHHt1 as (r2 & Ht' & Hr).
+          exists r2. split; auto.
+          econstructor; eauto.
+      }
+      destruct Hr2 as (r2 & ? & ?).
+      eexists. split. unfold Σ2. econstructor; eauto. auto.
+  Qed.
+End FSIM_REF.
+
 Section LTS.
   Context {liA liB S} (L : lts liA liB S).
 
@@ -53,12 +102,11 @@ Section REFINE.
   Variable C: Clight.program.
   Variable Σ: Genv.symtbl -> !li_d --o !li_d.
   Context {p: Clight.program} (ps: prog_sim p Σ).
-  (* Hypothesis RS: forall σ, reachable (Σ se) σ -> reactive σ. *)
   (* li_dc is simply an adapter that forgets the memory in C calling convertions
-  so that outgoing calls from C can interact with the specification *)
-  Let T1 := clight C se @ !li_dc @ (Σ se).
-  Let T2 := c_mix_sem C Σ se.
-
+     so that outgoing calls from C can interact with the specification *)
+  Let T1 := clight C se @ !li_dc @ (Σ se). (* linear function *)
+  Let T2 := c_mix_sem C Σ se.              (* coherence semantics *)
+  (* TODO: use coh_refinement *)
   Lemma mix_sem_ref: ref T1 T2.
   Proof.
     intros trace. cbn -[clight].
