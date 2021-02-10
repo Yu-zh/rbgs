@@ -7,20 +7,6 @@ Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
 Require Import SemDef SepCKLR.
 
-(* A relation that allows arguments in C language interface to be more
-   defined than those in abstract language interface *)
-Inductive q_rel': query li_d -> query li_c -> mem -> Prop:=
-| q_rel'_intro:
-    forall vf sg args args' m,
-      list_rel Val.lessdef args args' ->
-      q_rel' ({|dq_vf:=vf;dq_sg:=sg;dq_args:=args|})
-             ({|cq_vf:=vf;cq_sg:=sg;cq_args:=args';cq_mem:=m|}) m.
-
-Definition r_with_mem (r: reply li_d) m: reply li_c :=
-  match r with
-    {|dr_retval:=ret|} => ({|cr_retval:=ret;cr_mem:=m|})
-  end.
-
 Section REACH.
   Context {liA liB: language_interface} (Σ: !liA --o !liB).
   Inductive reachable: !liA --o !liB -> Prop :=
@@ -64,39 +50,6 @@ Record prog_sim (p: Clight.program) (Σ: Genv.symtbl -> !li_d --o !li_d) :=
       init_mem m -> mspec_rel (Σ se) m;
   reactive_spec: forall se σ, reachable (Σ se) σ -> reactive σ;
   }.
-
-Definition q_with_mem (q: query li_d) m: query li_c :=
-  match q with
-    {|dq_vf:=vf;dq_sg:=sg;dq_args:=args|} =>
-    {|cq_vf:=vf;cq_sg:=sg;cq_args:=args;cq_mem:=m|}
-  end.
-
-Inductive vals_defined: list val -> Prop :=
-| vals_defined_nil: vals_defined nil
-| vals_defined_cons: forall v vs,
-    v <> Vundef ->
-    vals_defined vs ->
-    vals_defined (v::vs).
-
-Definition query_defined (q: query li_d): Prop :=
-  match q with
-    {|dq_vf:=_;dq_sg:=_;dq_args:=args|} => vals_defined args
-  end.
-
-Lemma defined_query_with_mem q q' m:
-  query_defined q ->
-  q_rel' q q' m ->
-  q' = q_with_mem q m.
-Proof.
-  intros. inv H0. cbn in *.
-  f_equal. symmetry.
-  revert args' H1.
-  induction H.
-  intros. inv H1. auto.
-  intros. inv H1. f_equal.
-  inv H4; easy.
-  apply IHvals_defined. auto.
-Qed.
 
 Lemma list_coh_refl {A} (xs ys: list (token A)):
   xs = ys ->
