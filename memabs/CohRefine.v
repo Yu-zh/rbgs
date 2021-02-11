@@ -7,6 +7,8 @@ Require Import CKLR Clightrel.
 Require Import Coherence CompCertSem Bigstep.
 Require Import SemDef MemAbs ProgSim.
 
+(* Embedding preserves the simulation order:
+   L1 ≤ L2 → ⟦ L1 ⟧ ⊑ ⟦ L2 ⟧ *)
 Section FSIM_REF.
   Context {liA liB1 liB2} (L1: semantics liA liB1) (L2: semantics liA liB2).
   Context (HL1: sem_coherence L1) (HL2: sem_coherence L2).
@@ -56,6 +58,82 @@ Section FSIM_REF.
   Qed.
 End FSIM_REF.
 
+Section COH_COMP.
+  Context {liA liB liC: language_interface}
+          (Σ1: Genv.symtbl -> !liA --o !liB)
+          (Σ2: Genv.symtbl -> coh_semantics liB liC).
+  Variable se: Genv.symtbl.
+  Program Definition coh_comp: coh_semantics liA liC :=
+    {|
+    vq := vq _ _ (Σ2 se);
+    lf := lf _ _ (Σ2 se) @ (Σ1 se);
+    |}.
+  Next Obligation.
+    eapply Hvq. eauto.
+  Qed.
+End COH_COMP.
+
+(* Underlay independence:
+   Σ1 ⊑ Σ2 → Σ1 ∘ Σ ⊑ Σ2 ∘ Σ *)
+Section MONOTONICITY.
+  Context {liA liB liC1 liC2: language_interface}
+          (Σ: Genv.symtbl -> !liA --o !liB)
+          (Σ1: Genv.symtbl -> coh_semantics liB liC1)
+          (Σ2: Genv.symtbl -> coh_semantics liB liC2).
+  Variable sk : AST.program unit unit.
+  Context (cc: callconv liC1 liC2) (REF: coh_refinement cc Σ1 Σ2 sk).
+  (* This can be dischanged easily when sep_cklr is the calling convertion *)
+  Hypothesis HΣ:
+    forall se1 se2 w, match_senv cc w se1 se2 -> ref (Σ se1) (Σ se2).
+  Let ΣL1 := coh_comp Σ Σ1.
+  Let ΣL2 := coh_comp Σ Σ2.
+  Lemma coh_comp_ref: coh_refinement cc ΣL1 ΣL2 sk.
+  Proof.
+    intros se1 se2 wB Hse Hsk. unfold ΣL1, ΣL2.
+    specialize (REF _ _ _ Hse Hsk). specialize (HΣ _ _ _ Hse).
+    clear -REF HΣ.
+    destruct REF as [Hvq Href].
+    split.
+    - intros. cbn. now apply Hvq.
+    - clear Hvq. cbn. intros until t. intros (w & Ht & Hw) Hq.
+      specialize (Href _ _ _ _ Hw Hq).
+      destruct Href as (r2 & Hw' & Hr).
+      exists r2. split; auto.
+      exists w. split; auto.
+  Qed.
+End MONOTONICITY.
+
+(* Composition of refinement:
+   Σ1 ⊑ Σ2 ∧ Σ2 ⊑ Σ3 → Σ1 ⊑ Σ3*)
+Section REF_COMP.
+  Context {liA liB1 liB2 liB3: language_interface}
+          (Σ1: Genv.symtbl -> coh_semantics liA liB1)
+          (Σ2: Genv.symtbl -> coh_semantics liA liB2)
+          (Σ3: Genv.symtbl -> coh_semantics liA liB3).
+  Variable sk : AST.program unit unit.
+  Context (cc1: callconv liB1 liB2) (REF1: coh_refinement cc1 Σ1 Σ2 sk).
+  Context (cc2: callconv liB2 liB3) (REF2: coh_refinement cc2 Σ2 Σ3 sk).
+  Lemma coh_ref_comp: coh_refinement (cc1 @ cc2) Σ1 Σ3 sk.
+    intros se1 se3 wB Hse Hsk. destruct wB as [[se2 wB1] wB2].
+    destruct Hse as [Hse1 Hse2].
+    specialize (REF1 _ _ _ Hse1 Hsk).
+    eapply match_senv_valid_for in Hsk; eauto.
+    specialize (REF2 _ _ _ Hse2 Hsk).
+    split.
+    - intros q1 q3 Hq13. destruct Hq13 as (q2 & Hq12 & Hq23).
+      erewrite coh_vq_ref; [ | exact REF1 | eauto ].
+      erewrite coh_vq_ref; [ | exact REF2 | eauto ].
+      reflexivity.
+    - intros q1 q3 r1 t Ht Hq13. destruct Hq13 as (q2 & Hq12 & Hq23).
+      exploit @coh_lf_ref. exact REF1. eauto. eauto.
+      intros (r2 & Ht2 & Hr2).
+      exploit @coh_lf_ref. exact REF2. eauto. eauto.
+      intros (r3 & Ht3 & Hr3).
+      exists r3. split; auto.
+      esplit; eauto.
+  Qed.
+End REF_COMP.
+
 Section LTS.
   Context {liA liB S} (L : lts liA liB S).
 
@@ -82,7 +160,9 @@ Section LTS.
   Proof.
     intros H.
     eapply lts_ext_calls_ind
-      with (P := fun b s t b' s' => lts_trace L false s' t2 r -> lts_trace L true s (t ++ t2) r).
+      with (P := fun b s t b' s' =>
+                   lts_trace L false s' t2 r ->
+                   lts_trace L true s (t ++ t2) r).
     - intros. eapply lts_trace_steps; eauto.
     - intros until t. intros Hext Haft Hcalls IH H'.
       specialize (IH H'). rewrite <- app_comm_cons.
@@ -97,17 +177,26 @@ Section LTS.
   Qed.
 End LTS.
 
+Program Definition clight_coh (C: Clight.program) se :=
+  {|
+  vq := fun q => Genv.is_internal (Genv.globalenv se C) (entry q);
+  lf := clight C se;
+  |}.
+Next Obligation.
+  now inv H.
+Qed.
+
 Section REFINE.
-  Variable se: Genv.symtbl.
   Variable C: Clight.program.
   Variable Σ: Genv.symtbl -> !li_d --o !li_d.
   Context {p: Clight.program} (ps: prog_sim p Σ).
   (* li_dc is simply an adapter that forgets the memory in C calling convertions
      so that outgoing calls from C can interact with the specification *)
-  Let T1 := clight C se @ !li_dc @ (Σ se). (* linear function *)
-  Let T2 := c_mix_sem C Σ se.              (* coherence semantics *)
-  (* TODO: use coh_refinement *)
-  Lemma mix_sem_ref: ref T1 T2.
+  Variable sk: AST.program unit unit.
+  Let T1 := fun se => clight C se @ !li_dc @ (Σ se). (* linear function *)
+  Let T2 := c_mix_sem C Σ sk.              (* coherence semantics *)
+
+  Lemma mix_sem_ref' se: ref (T1 se) (T2 se).
   Proof.
     intros trace. cbn -[clight].
     destruct trace as [bot_tr top_tr].
@@ -169,4 +258,72 @@ Section REFINE.
         eapply lts_ext_cons.
         constructor. econstructor. apply IHt1.
   Qed.
+
+  Let T1' := (coh_comp Σ (coh_comp (fun se => !li_dc) (clight_coh C))).
+  Lemma mix_sem_ref:
+    coh_refinement 1 T1' T2 sk.
+  Proof.
+    intros se ? [ ] [ ] Hsk1.
+    split.
+    - intros ? ? [ ]. now cbn.
+    - intros ? ? ? ? H [ ].
+      exists r1. split; try easy.
+      exploit mix_sem_ref'. unfold T1.
+      unfold coh_comp in H. cbn -[lmap_compose] in H.
+      rewrite lmap_compose_assoc in H. apply H. auto.
+  Qed.
 End REFINE.
+
+Require Import CallconvAlgebra.
+Section CC_REF.
+  Context {liA liB1 liB2: language_interface}
+          (cc1 cc2: callconv liB1 liB2) (Hcc: ccref cc1 cc2).
+  Variable sk: AST.program unit unit.
+  Context (Σ1: Genv.symtbl -> coh_semantics liA liB1)
+          (Σ2: Genv.symtbl -> coh_semantics liA liB2)
+          (HΣ: coh_refinement cc2 Σ1 Σ2 sk).
+
+  Lemma coh_cc_ref: coh_refinement cc1 Σ1 Σ2 sk.
+  Proof.
+    intros se1 se2 wB Hse Hsk.
+    split.
+    - intros q1 q2 Hq.
+      specialize (Hcc _ _ _ _ _ Hse Hq).
+      destruct Hcc as (w' & Hse' & Hq' & ?).
+      specialize (HΣ _ _ _ Hse' Hsk).
+      eapply coh_vq_ref; eauto.
+    - intros q1 q2 r1 t Ht Hq.
+      specialize (Hcc _ _ _ _ _ Hse Hq).
+      destruct Hcc as (w' & Hse' & Hq' & ?).
+      specialize (HΣ _ _ _ Hse' Hsk).
+      exploit @coh_lf_ref; eauto.
+      intros (r2 & Ht' & Hr).
+      exists r2. split; auto.
+  Qed.
+End CC_REF.
+
+Section CONTEXTUAL_REF.
+  Context (Σ: Genv.symtbl -> !li_d --o !li_d) (p: Clight.program)
+          (ps: prog_sim p Σ).
+  Variable C: Clight.program.
+  Variable U: Genv.symtbl -> !li_d --o !li_d.
+  Context {sk: AST.program unit unit}
+          (Hsk: link (skel (semantics1 C)) (skel (semantics1 p)) = Some sk).
+  (* ⟦ C ⟧ ∘ Σ ∘ U *)
+  Let S1 := (coh_comp U (coh_comp Σ (coh_comp (fun se => !li_dc) (clight_coh C)))).
+  (* ⟦ C ⊕ p ⟧ ∘ U *)
+  Let S2 := (coh_comp U (c_hcomp_sem p C sk)).
+  Let Sx := (c_mix_sem C Σ sk).
+
+  (* Let sk := AST.erase_program C. *)
+  Lemma contextual_ref: coh_refinement (sepcc ps) S1 S2 sk.
+  Proof.
+    unfold S1, S2.
+    apply coh_comp_ref. 2: { now intros ? ? ? [ ] x. }.
+    apply coh_cc_ref with (cc2 := (1 @ sepcc ps)%cc).
+    apply cc_compose_id_left.
+    apply coh_ref_comp with (Σ2 := Sx).
+    eapply mix_sem_ref. eauto.
+    apply fsim_sound_cc. apply fsim_abs_impl; auto.
+  Qed.
+End CONTEXTUAL_REF.

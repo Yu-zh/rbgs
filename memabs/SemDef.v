@@ -210,8 +210,6 @@ Program Definition li_dc: li_d --o li_c :=
   has '(d, c) := li_rel d c
   |}.
 Next Obligation.
-  destruct d1 as [dq1 dr1]. destruct d2 as [dq2 dr2].
-  destruct c1 as [cq1 cr1]. destruct c2 as [cq2 cr2].
   intuition.
   - inv H. inv H0. f_equal. exploit H3. f_equal. inversion 1. auto.
   - inv H. inv H0. inv H1. auto.
@@ -344,9 +342,9 @@ Section ABS_EMBED.
         intros [? ?]. eexists.
         rewrite <- app_comm_cons. f_equal. eauto.
   Qed.
-
+  Variable sk: AST.program unit unit.
   (* L determ + Σ coherence = L @ Σ coherence *)
-  Let LΣ := Abs.semantics (skel L) li_rel Σ L.
+  Let LΣ := Abs.semantics sk li_rel Σ L.
   Lemma LΣ_coh: sem_coherence LΣ.
   Proof.
     intros se bot_tr' [q' r'] bot_tr [q r] H H0. cbn.
@@ -448,14 +446,7 @@ Section ABS_EMBED.
     split. split; auto. apply H1. intros. apply H1. inv H2. auto.
   Qed.
 
-  Program Definition mix_sem se: coh_semantics liA liD :=
-    {|
-    vq := valid_query (L se);
-    lf := compcerto_lmap' LΣ LΣ_coh se;
-    |}.
-  Next Obligation.
-    inv H. apply H2.
-  Qed.
+  Definition mix_sem: Genv.symtbl -> coh_semantics liA liD := lts_sem LΣ LΣ_coh.
 End ABS_EMBED.
 Lemma determ_li_dc: li_rel_determ li_rel.
 Proof.
@@ -463,9 +454,9 @@ Proof.
   intros. inv H. inv H0.
   split. auto. intros. inv H. auto.
 Qed.
-Definition c_mix_sem p (Σ : Genv.symtbl -> !li_d --o !li_d) se :=
+Definition c_mix_sem p (Σ : Genv.symtbl -> !li_d --o !li_d) sk se :=
   mix_sem Σ (semantics1 p) (clight_determinate p)
-          li_rel determ_li_dc se.
+          li_rel determ_li_dc sk se.
 
 (* This module aims to define C ⊕ p, where C and p are both Clight program. The
    composition in not commutative in the sense that the only interactive between
@@ -565,7 +556,8 @@ Section IMPL_EMBED.
         rewrite <- app_comm_cons. f_equal. eauto.
   Qed.
 
-  Let Lσ := Impl.semantics (skel L) σ L.
+  Variable sk: AST.program unit unit.
+  Let Lσ := Impl.semantics sk σ L.
   Lemma Lσ_coh: sem_coherence Lσ.
   Proof.
     intros se bot_tr' [q' r'] bot_tr [q r] H H0. cbn.
@@ -659,15 +651,9 @@ Section IMPL_EMBED.
     intuition. apply H1. now injection H2.
   Qed.
 
-  Program Definition hcomp_sem se: coh_semantics liA liC :=
-    {|
-    vq := valid_query (L se);
-    lf := compcerto_lmap' Lσ Lσ_coh se;
-    |}.
-  Next Obligation.
-    inv H. apply H2.
-  Qed.
+  Definition hcomp_sem: Genv.symtbl -> coh_semantics liA liC :=
+    lts_sem Lσ Lσ_coh.
 End IMPL_EMBED.
-Definition c_hcomp_sem p C se :=
+Definition c_hcomp_sem p C sk se :=
   hcomp_sem (fun se => clight_bigstep p se @ !li_dc)
-            (semantics1 C) (clight_determinate C) se.
+            (semantics1 C) (clight_determinate C) sk se.
