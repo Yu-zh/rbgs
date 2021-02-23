@@ -327,3 +327,13 @@ Section CONTEXTUAL_REF.
     apply fsim_sound_cc. apply fsim_abs_impl; auto.
   Qed.
 End CONTEXTUAL_REF.
+
+Section VCOMP.
+  Context (Σ1: Genv.symtbl -> !li_d --o !li_d)
+          (p1: Clight.program) (ps1: prog_sim p1 Σ1).
+  Context (Σ2: Genv.symtbl -> !li_d --o !li_d)
+          (p2: Clight.program) (ps2: prog_sim p2 Σ2).
+  Variable C: Clight.program.
+  Variable U: Genv.symtbl -> !li_d --o !li_d.
+
+End VCOMP.
