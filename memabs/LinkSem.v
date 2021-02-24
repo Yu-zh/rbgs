@@ -157,3 +157,151 @@ Section LINK_FSIM.
   Qed.
 
 End LINK_FSIM.
+
+Section C_LINK_SEM.
+  Context (C: Clight.program) (p: Clight.program).
+  Context {sk: AST.program unit unit}
+          (Hsk: link (skel (semantics1 C)) (skel (semantics1 p)) = Some sk).
+  Let L := fun b: bool => if b then semantics1 C else semantics1 p.
+  Lemma c_vq_excl (i j: bool) se q:
+    Smallstep.valid_query ((if i then semantics1 C else semantics1 p) se) q = true ->
+    Smallstep.valid_query ((if j then semantics1 C else semantics1 p) se) q = true ->
+    i = j.
+  Admitted.
+
+  Lemma c_link_coh: sem_coherence (semantics L sk).
+  Proof.
+    apply link_sem_coh.
+    apply clight_determinate.
+    apply clight_determinate.
+    apply c_vq_excl.
+  Qed.
+
+  Program Definition c_link_sem se: coh_semantics li_d li_c :=
+    {|
+    vq := Smallstep.valid_query (semantics L sk se);
+    lf := compcerto_lmap' (semantics L sk) c_link_coh se @ !li_dc;
+    |}.
+  Next Obligation.
+    inv H1. apply H4.
+  Qed.
+End C_LINK_SEM.
+
+Section IMPL_COMP_PROP.
+  Context {liA liB liC: language_interface} (σ: Genv.symtbl -> !liA --o liB)
+          (L: Smallstep.semantics liB liC) (HL: determinate L).
+  Context {liX: language_interface} (lm: liX --o liA).
+  Variable sk: AST.program unit unit.
+
+  Let S1 := hcomp_sem (fun se => (σ se) @ !lm) L HL sk.
+  Let S2 := hcomp_sem σ L HL sk.
+
+  Inductive impl_match: _ -> _ -> Prop :=
+  | impl_st_match s:
+      impl_match (Impl.st L s) (Impl.st L s)
+  | impl_ext_match s tx ty:
+      has (!lm) (tx, ty) ->
+      impl_match (Impl.ext L s tx) (Impl.ext L s ty).
+
+  Lemma hcomp_lmap_ref se:
+    ref (S1 se) (S2 se @ !lm).
+  Proof.
+    intros [trx [q r]] H. inv H. inv H4.
+    assert (exists tr, dag_lmaps lm trx tr /\
+                  lts_trace (Impl.lts σ L se) true (Impl.st L s0) tr r)
+      as (tr & Hlmap & Htr).
+    {
+      rename H5 into Htr. clear -Htr.
+      remember (@Impl.st liX liB liC L s0) as s.
+      remember (@Impl.st liA liB liC L s0) as s'.
+      assert (Hs: impl_match s s'). subst. constructor.
+      clear Heqs Heqs'. revert s' Hs.
+      induction Htr.
+      - intros s1 Hs. clear Htr.
+        assert (exists s1', Star (Impl.lts σ L se) s1 E0 s1' /\ impl_match s' s1')
+          as (s1' & Hstar & Hs').
+        {
+          clear IHHtr. revert s1 Hs. induction H.
+          - eexists. split; eauto. apply Smallstep.star_refl.
+          - inv H.
+            + intros s1 Hs. inv Hs.
+              exploit IHstar. econstructor.
+              intros (s1' & Hstar & Hs').
+              exists s1'. split; auto.
+              eapply Smallstep.star_left; eauto.
+              eapply Impl.step_internal. eauto.
+            + intros s1 Hs. inv Hs.
+              destruct H4 as (tr' & Hlm & Htr).
+              exploit IHstar. econstructor. eauto.
+              intros (s1' & Hstar & Hs').
+              exists s1'. split; auto.
+              eapply Smallstep.star_left; eauto.
+              eapply Impl.step_at_external; eauto.
+            + intros s1 Hs. inv Hs.
+              inv H3.
+              exploit IHstar. econstructor.
+              intros (s1' & Hstar & Hs').
+              exists s1'. split; auto.
+              eapply Smallstep.star_left; eauto.
+              eapply Impl.step_after_external.
+        }
+        exploit IHHtr. eauto. intros (tr & Hlm & Htr).
+        exists tr. split; auto. econstructor; eauto.
+      - intros s1 Hs. eexists. split. constructor.
+        constructor. inv H. inv Hs. econstructor. auto.
+      - intros s1 Hs. inv H. inv H0. inv Hs. inv H2.
+        exploit IHHtr. econstructor. apply H4.
+        intros (tr' & Hlm & Htr'). eexists. split.
+        econstructor; eauto.
+        destruct b.
+        eapply lts_trace_external; eauto. constructor. constructor.
+    }
+    exists tr. split; auto.
+    econstructor. apply H2.
+    econstructor. apply H. auto.
+  Qed.
+End IMPL_COMP_PROP.
+
+(* The linking for two Clight components *)
+Section C_LINK_FSIM.
+
+  Context (C: Clight.program) (p: Clight.program).
+  Context {sk: AST.program unit unit}
+          (Hsk: link (skel (semantics1 C)) (skel (semantics1 p)) = Some sk).
+
+  Let L := fun b: bool => if b then semantics1 C else semantics1 p.
+
+  Lemma c_ext_vq_excl se (i: bool) s q:
+    Smallstep.at_external (L i se) s q ->
+    forall j : bool, Smallstep.valid_query (L j se) q = false.
+  Proof.
+  Admitted.
+
+  Let S1 := c_hcomp_sem p C sk.
+  Let S1' := hcomp_sem (clight_bigstep p) (semantics1 C) (clight_determinate C) sk.
+  Let S2 := c_link_sem C p Hsk.
+
+  Lemma c_link_fsim: coh_refinement cc_id S1 S2 sk.
+  Proof.
+    constructor.
+    admit.
+    intros q ? r t Ht [ ]. inv H.
+    exists r. split. 2: { constructor; auto. }
+    rename se2 into se.
+    assert (H: has ((S1' se) @ !li_dc) (t, (q, r))).
+    {
+      exploit @hcomp_lmap_ref. apply Ht. auto.
+    }
+    inversion H as (tr & Hx & Hy).
+    exists tr. split; auto.
+    exploit @link_ref'.
+    3: { apply Hy. }
+    - intros. eapply bigstep_lmaps_soundness in H1.
+      instantiate (1 := semantics1 p). exact H1.
+    - apply c_ext_vq_excl.
+    - intros. apply H1.
+      Unshelve.
+      apply clight_determinate.
+      apply (c_vq_excl _ _ Hsk).
+  Admitted.
+End C_LINK_FSIM.
