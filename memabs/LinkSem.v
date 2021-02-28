@@ -155,18 +155,63 @@ Section LINK_FSIM.
         eapply lts_trace_star; eauto.
         apply star_internal. apply H.
   Qed.
-
 End LINK_FSIM.
 
+(* Inductive linked {A} `{Linker A} : option A -> option A -> option A -> Prop := *)
+(* | linked_n : linked None None None *)
+(* | linked_l a : linked (Some a) None (Some a) *)
+(* | linked_r a : linked None (Some a) (Some a) *)
+(* | linked_lr a b c : link a b = Some c -> linked (Some a) (Some b) (Some c). *)
+
+(* Lemma find_def_link se (p1 p2 p: Clight.program) b: *)
+(*   link p1 p2 = Some p -> *)
+(*   linked (Genv.find_def (Genv.globalenv se p1) b) *)
+(*          (Genv.find_def (Genv.globalenv se p2) b) *)
+(*          (Genv.find_def (Genv.globalenv se p) b). *)
+(* Proof. *)
+(*   intros Hp. apply link_prog_inv in Hp as (_ & Hdefs & Hp). *)
+(*   rewrite !Genv.find_def_spec. *)
+(*   destruct Genv.invert_symbol; try constructor. *)
+(*   subst p. rewrite prog_defmap_elements, PTree.gcombine; auto. *)
+(*   destruct (prog_defmap p1)!i eqn:H1, (prog_defmap p2)!i eqn:H2; try constructor. *)
+(*   edestruct Hdefs as (_ & _ & gd & Hgd); eauto. *)
+(*   cbn. rewrite Hgd. constructor; auto. *)
+(* Qed. *)
+
+
 Section C_LINK_SEM.
-  Context (C: Clight.program) (p: Clight.program).
-  Context {sk: AST.program unit unit}
-          (Hsk: link (skel (semantics1 C)) (skel (semantics1 p)) = Some sk).
+  Context {C p Cp: Clight.program} (Hlk: link C p = Some Cp).
+  Let sk := AST.erase_program Cp.
   Let L := fun b: bool => if b then semantics1 C else semantics1 p.
+
+  Lemma internal_func_excl se b f:
+    Genv.find_def (Genv.globalenv se C) b = Some (Gfun (Internal f)) ->
+    Genv.find_def (Genv.globalenv se p) b = Some (Gfun (Internal f)) ->
+    False.
+  Proof.
+    unfold link in Hlk.
+    Set Printing Implicit.
+    Local Transparent Linker_program.
+    cbn in *. unfold link_program in Hlk.
+
+  Admitted.
   Lemma c_vq_excl (i j: bool) se q:
     Smallstep.valid_query ((if i then semantics1 C else semantics1 p) se) q = true ->
     Smallstep.valid_query ((if j then semantics1 C else semantics1 p) se) q = true ->
     i = j.
+  Proof.
+    destruct i; destruct j; auto.
+    - intros HC Hp. exfalso.
+      cbn in *.
+      unfold Genv.is_internal in *.
+      destruct (Genv.find_funct _ _) eqn: HfdC in HC; try congruence.
+      destruct (Genv.find_funct _ _) eqn: Hfdp in Hp; try congruence.
+      unfold Genv.find_funct in *. destruct (cq_vf q) eqn: Hq; try congruence.
+      destruct (Ptrofs.eq_dec _ _) eqn: Hi; try congruence.
+      unfold Genv.find_funct_ptr in *.
+      SearchAbout Genv.find_def.
+      Transparent Linker_def Linker_fundef.
+      unfold link in Hlk.
   Admitted.
 
   Lemma c_link_coh: sem_coherence (semantics L sk).
