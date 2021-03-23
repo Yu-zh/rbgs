@@ -43,12 +43,17 @@ Section TRACE_INV.
         (INV2: in_event_inv (cq_mem q') (cr_mem r'))
         (REST: ctrace_inv (cr_mem r') rest rest' m1),
         ctrace_inv m0 ((q, r) :: rest) ((q', r') :: rest') m1.
+
 End TRACE_INV.
 
 Record prim_sim
        (σ: Genv.symtbl -> !li_c --o li_c)
        (Σ: Genv.symtbl -> !li_d --o !li_d) :=
   {
+  (* The sim_rel doesn't allow memory with variables more than necessary. It
+  doesn't matter whether an abstract stack is represented as an array with
+  counter or two arrays. But it can't contain variables that are used by other
+  components *)
   sim_rel :> (!li_d --o !li_d) -> mem -> Prop;
   init_mem : mem -> Prop;
   valid_se : Genv.symtbl -> Prop;
@@ -100,7 +105,7 @@ Inductive exec_star {liA liB: language_interface} (σ: !liA --o !liB):
       (REST: exec_star σ' ts qrs σ''),
       exec_star σ (t ++ ts) ((q, r) :: qrs) σ''.
 
-Lemma trace_exec_star {liA liB: language_interface} (σ: !liA --o !liB) xs ys:
+Lemma exec_star_intro {liA liB: language_interface} (σ: !liA --o !liB) xs ys:
   has σ (ys, xs) -> (forall s, reachable σ s -> reactive s) ->
   exists σ', exec_star σ ys xs σ'.
 Proof.
@@ -110,14 +115,57 @@ Proof.
   - admit.
 Admitted.
 
+Lemma exec_star_elim1 {liA liB: language_interface} (σ σ': !liA --o !liB) aa bb:
+  exec_star σ bb aa σ' ->
+  forall aa' bb', has σ' (bb', aa') ->
+             has σ (bb++bb', aa++aa').
+Proof.
+  induction 1.
+  - trivial.
+  - intros. exploit IHexec_star.
+    eauto. intros. subst.
+    cbn in H1. rewrite app_assoc in H1.
+    rewrite app_comm_cons in H1. auto.
+Qed.
+
+Lemma exec_star_elim2 {liA liB: language_interface} (σ σ': !liA --o !liB) aa bb:
+  exec_star σ bb aa σ' ->
+  forall bb' aax, has σ (bb++bb', aax) ->
+             exists aa', aax = aa ++ aa' /\
+                    has σ' (bb', aa').
+Proof.
+  induction 1.
+  - intros. exists aax. split; auto.
+  - intros. subst. cbn in *.
+    inv EXEC. assert (exists aax', aax = (q, r) :: aax') as (aax' & ->).
+    {
+      pose proof (@has_coh _ σ).
+      exploit H2. apply H0. apply H1.
+      intros Hcoh. cbn in Hcoh. exploit Hcoh.
+      rewrite <- app_assoc.
+      admit. intros (? & ?). inv H3.
+      admit. admit.
+    }
+    exploit IHexec_star.
+    rewrite app_assoc. eauto.
+    intros (aa' & -> & ?). exists aa'. split; auto.
+Admitted.
+
 Lemma exec_star_next {liA liB liC: language_interface}
       (s1: !liB --o !liA) (s2: !liC --o !liB) bot mid s2' dq dr:
   exec_star s2 bot mid s2' ->
   next (s1 @ s2) bot dq dr = next s1 mid dq dr @ s2'.
 Proof.
-  intros Hstart.
-Admitted.
-
+  intros Hstar. apply lmap_ext. intros cc aa.
+  split; intro H.
+  - inversion H as (bb & Hcb & Hba). clear H.
+    exploit @exec_star_elim2. apply Hstar. apply Hcb.
+    intros (aa' & Hbb & Hs2'). subst bb.
+    cbn. exists aa'. split; auto.
+  - inversion H as (bb & Hcb & Hba). clear H.
+    cbn in *. exploit @exec_star_elim1. apply Hstar.
+    apply Hcb. intro. exists (mid ++ bb). split; auto.
+Qed.
 
 Section TRACE_SIM.
   Context {σ Σ} (psim: prim_sim σ Σ).
