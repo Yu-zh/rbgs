@@ -1,5 +1,8 @@
 Require Export structures.Poset.
+Require Import Coq.Logic.Classical.
+Require Import Coq.Logic.ChoiceFacts.
 
+Axiom dep_choice : DependentFunctionalChoice.
 
 (** * Completely distributive lattices *)
 
@@ -81,8 +84,18 @@ Section PROPERTIES.
     - apply inf_glb.
   Qed.
 
-  Require Import Coq.Logic.Classical.
-  Require Import Coq.Logic.ChoiceFacts.
+  Local Lemma not_exists_forall {I J} {P: forall i : I, J i -> Prop}:
+    (~ (exists i : I, forall j : J i, P i j)) <-> forall i : I, exists j : J i, ~ P i j.
+  Proof.
+    split; firstorder.
+    eapply not_all_ex_not in H. apply H.
+  Qed.
+
+  Local Lemma not_exists {A} {P : A -> Prop}:
+    (~ exists x, P x) <-> (forall x, ~ P x).
+  Proof.
+    split; firstorder.
+  Qed.
 
   Local Lemma l {I J} (x : forall i:I, J i -> L) (F: (forall i: I, J i) -> I):
     exists (i: I), forall j: J i, exists f: (forall i: I, J i), x i j = x (F f) (f (F f)).
@@ -94,10 +107,14 @@ Section PROPERTIES.
     }
     assert (exists f, forall i, ~ x i (f i) = x (F f) (f (F f))).
     {
-      admit.
+      rewrite not_exists_forall in contra.
+      apply dep_choice in contra.
+      destruct contra as [f Hf].
+      exists f. intros i. specialize (Hf i).
+      rewrite not_exists in Hf. apply Hf.
     }
     firstorder.
-  Admitted.
+  Qed.
 
   Lemma inf_sup {I J} (x : forall i:I, J i -> L) :
     inf i, sup j, x i j = sup f, inf i, x i (f i).
